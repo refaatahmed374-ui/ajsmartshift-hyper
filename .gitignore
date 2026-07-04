@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════
+#  AJ SmartShift Hyper — .gitignore
+# ═══════════════════════════════════════════════════════════
+
+# التبعيات (تُثبّت عبر npm ci في CI)
+node_modules/
+
+# مخرجات البناء
+out/
+dist/
+dist-electron/
+release/
+*.exe
+*.exe.blockmap
+latest.yml
+*.tsbuildinfo
+
+# 🔒 مولّدات المفاتيح + الأسرار — محلية فقط، لا تُرفع إطلاقاً
+tools/
+generate-key.js
+generate-license.cjs
+generate-*.cjs
+*license-gui*
+*.pem
+*.key
+.env
+.env.*
+
+# ملفات غير برمجية / محلية (وثائق ضخمة + إعداد أدوات محلية)
+.claude/
+الوثائق والمواصفات/
+*.bat
+
+# محرّرات / نظام التشغيل
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+
+# قاعدة بيانات محلية / نسخ احتياطية للتطوير
+*.sqlite
+*.sqlite-*
+*.db
+
+# ملاحظة: .npmrc محفوظ عمداً (runtime=electron ضروري لبناء better-sqlite3)
