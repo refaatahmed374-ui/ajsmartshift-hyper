@@ -1,0 +1,60 @@
+name: Build & Release Hyper
+
+# يعمل عند دفع وسم إصدار (مثل v2.31.3) أو يدوياً من تبويب Actions
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    runs-on: windows-latest   # ⭐ ضروري لبناء مثبّت ويندوز (electron-builder + better-sqlite3)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build renderer + main
+        run: npm run build:app
+
+      - name: Package Windows installer
+        run: npx electron-builder --win --publish never
+
+      - name: Read app version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          echo "version=$v" >> $env:GITHUB_OUTPUT
+          echo "الإصدار: $v"
+
+      - name: Publish to public releases repo
+        env:
+          # 🔑 يجب إضافته في Settings → Secrets and variables → Actions باسم RELEASES_TOKEN
+          #    (PAT بصلاحية repo على مستودع الإصدارات العام refaatahmed374-ui/ajsmartshift-releases)
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $rel = "release"
+          gh release create "v$v-hyper" `
+            "$rel/AJ-Smart-Shift-Hyper-Setup-v$v.exe" `
+            "$rel/AJ-Smart-Shift-Hyper-Setup-v$v.exe.blockmap" `
+            "$rel/latest.yml" `
+            -R refaatahmed374-ui/ajsmartshift-releases `
+            --title "AJ Smart Shift Hyper v$v" `
+            --latest `
+            --notes "إصدار آلي من CI — الوسم v$v."
