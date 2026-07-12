@@ -9,6 +9,38 @@ import type {
   Transaction
 } from './types'
 
+// ═════════════════════════════════════════════════════════════
+// ADR-012 v2 — معادلة الإغلاق الرسمية الموحّدة (المصدر الوحيد للنظام كله)
+// ═════════════════════════════════════════════════════════════
+
+/**
+ * مبيعات فوري مع العمولة = مبيعات فوري قبل العمولة × (1 + النسبة%).
+ * @param programSales  مبيعات فوري قبل العمولة (قروش)
+ * @param commissionPct نسبة العمولة مخزّنة ×100 (2.00% = 200)
+ */
+export function calcFawryWithCommission(programSales: number, commissionPct: number): number {
+  return Math.round(programSales * (1 + commissionPct / 10000))
+}
+
+export interface ShiftClosingInput {
+  posSales: number          // مبيعات POS
+  cashierRemaining: number  // نقدية الكاشير (المتبقية في الدرج)
+  cashierExpenses: number   // مصروفات الكاشير (منصرف البنود التي دفعها الكاشير)
+  collections: number       // التحصيل (وارد فئة تحصيل)
+}
+export interface ShiftClosingResult { result: number; status: BalanceStatus }
+
+/**
+ * نتيجة إغلاق الشيفت — المعادلة الرسمية الوحيدة (ADR-012 v2 — مطابقة لتسوية شيت حورس):
+ *   الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
+ * موجب ⇒ أوفر (surplus) · سالب ⇒ عجز (deficit) · صفر ⇒ مطابق (balanced)
+ */
+export function calcShiftClosing(i: ShiftClosingInput): ShiftClosingResult {
+  const result = i.cashierRemaining + i.cashierExpenses + i.collections - i.posSales
+  const status: BalanceStatus = result > 0 ? 'surplus' : result < 0 ? 'deficit' : 'balanced'
+  return { result, status }
+}
+
 // ===== 1. ماكينة فوري =====
 export function calcFawry(f: ShiftFawry): FawryResult {
   // مبيعات أساسي = استلام أساسي − تسليم أساسي + "من فوري للأساسي" + "من كاش أوت للأساسي"

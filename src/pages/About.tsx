@@ -6,7 +6,6 @@ import Icons from '../components/Icon'
 import BackupPage from './Backup'
 
 const GOLD = '#d4a017'
-const APP_VERSION = 'v2.31.2'
 
 type HubTab = 'info' | 'license' | 'backup' | 'business'
 
@@ -24,6 +23,7 @@ export default function About() {
     activate, requestActivation, refresh: refreshLicense,
   } = useLicense()
   const [tab, setTab] = useState<HubTab>('info')
+  const [appVersion, setAppVersion] = useState('')
 
   // ===== بيانات المنشأة =====
   const [biz, setBiz] = useState({
@@ -50,7 +50,13 @@ export default function About() {
     })
   }
 
-  useEffect(() => { loadLicense(); loadBiz() }, [])
+  async function loadVersion() {
+    try {
+      const info = await call(api.system.info()) as { version: string }
+      setAppVersion(info.version)
+    } catch {}
+  }
+  useEffect(() => { loadLicense(); loadBiz(); loadVersion() }, [])
 
   function handleLogoUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -111,7 +117,7 @@ export default function About() {
     : status?.state === 'expired' ? 'منتهٍ' : 'تجريبي'
 
   const infoRows: [string, string, string?][] = [
-    ['إصدار البرنامج',      APP_VERSION, GOLD],
+    ['إصدار البرنامج',      appVersion ? 'v' + appVersion : '—', GOLD],
     ['المنشأة',             biz.name || '—'],
     ['نوع الترخيص',         status?.tierLabel ?? '—', stateColor],
     ['حالة الترخيص',        stateText, stateColor],
@@ -137,7 +143,7 @@ export default function About() {
         <div className="flex-1 min-w-0">
           <div className="font-extrabold truncate" style={{ fontSize: 16, color: 'var(--txt-1)' }}>حول البرنامج</div>
           <div className="truncate" style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>
-            {biz.name || 'AJ Smart Shift'} · {APP_VERSION}
+            {biz.name || 'AJ Smart Shift'} · {appVersion ? 'v' + appVersion : ''}
           </div>
         </div>
         <span className="inline-flex items-center px-3 py-1 rounded-full flex-shrink-0"

@@ -28,6 +28,8 @@ const api = {
     updateStatus:  (id: number, s: string, uid: number)  => ipcRenderer.invoke('shifts:updateStatus', id, s, uid),
     updateNote:    (id: number, note: string)            => ipcRenderer.invoke('shifts:updateNote', id, note),
     updateOpening: (id: number, bal: number)             => ipcRenderer.invoke('shifts:updateOpening', id, bal),
+    updateCloseInputs: (id: number, data: unknown)       => ipcRenderer.invoke('shifts:updateCloseInputs', id, data),
+    updateMeta:        (id: number, data: unknown)       => ipcRenderer.invoke('shifts:updateMeta', id, data),
     delete:        (id: number)                          => ipcRenderer.invoke('shifts:delete', id),
     close:        (id: number, cash: number, posSales: number, cashierRemaining: number) => ipcRenderer.invoke('shifts:close', id, cash, posSales, cashierRemaining),
   },
@@ -35,12 +37,15 @@ const api = {
   // فوري
   fawry: {
     get:    (shiftId: number)          => ipcRenderer.invoke('fawry:get', shiftId),
+    closingMonth: (month: string)      => ipcRenderer.invoke('fawry:closingMonth', month),
+    allClosing:   ()                   => ipcRenderer.invoke('fawry:allClosing'),
     update: (shiftId: number, data: unknown) => ipcRenderer.invoke('fawry:update', shiftId, data),
   },
 
   // عهدة
   custody: {
     get:    (shiftId: number)          => ipcRenderer.invoke('custody:get', shiftId),
+    getByShiftIds: (shiftIds: number[]) => ipcRenderer.invoke('custody:getByShiftIds', shiftIds),
     update: (shiftId: number, data: unknown) => ipcRenderer.invoke('custody:update', shiftId, data),
   },
 
@@ -52,6 +57,7 @@ const api = {
   // بنود
   tx: {
     getByShift: (shiftId: number)      => ipcRenderer.invoke('tx:getByShift', shiftId),
+    getByShiftIds: (shiftIds: number[]) => ipcRenderer.invoke('tx:getByShiftIds', shiftIds),
     add:        (data: unknown)        => ipcRenderer.invoke('tx:add', data),
     addBatch:   (items: unknown[])     => ipcRenderer.invoke('tx:addBatch', items),
     update:     (id: number, data: unknown) => ipcRenderer.invoke('tx:update', id, data),
@@ -70,6 +76,13 @@ const api = {
     createSub:  (data: unknown)                     => ipcRenderer.invoke('cats:createSub', data),
     updateSub:  (id: number, name: string)          => ipcRenderer.invoke('cats:updateSub', id, name),
     deleteSub:  (id: number)                        => ipcRenderer.invoke('cats:deleteSub', id),
+  },
+
+  // استيراد اليومية من Excel
+  excel: {
+    analyze:      ()                                  => ipcRenderer.invoke('excel:analyze'),
+    import:       (filePath: string, options: unknown) => ipcRenderer.invoke('excel:import', filePath, options),
+    exportErrors: (errors: unknown[])                 => ipcRenderer.invoke('excel:exportErrors', errors),
   },
 
   // موظفون
@@ -197,6 +210,7 @@ const api = {
     list:       () => ipcRenderer.invoke('backup:list'),
     create:     () => ipcRenderer.invoke('backup:create'),
     delete:     (path: string) => ipcRenderer.invoke('backup:delete', path),
+    restore:    (path: string) => ipcRenderer.invoke('backup:restore', path),
   },
 
   // محو البيانات

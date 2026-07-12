@@ -192,6 +192,7 @@
   .tr { @apply transition-colors; border-bottom: 1px solid rgba(255,255,255,0.09); }
   .tr:hover { background: rgba(96,165,250,0.08); }
   .td { @apply px-3 py-2 text-sm; color: var(--txt-1); }
+  .td-lg { @apply px-2.5 py-2 text-sm; color: var(--txt-1); border-bottom: 1px solid var(--inner-border); }
   .th {
     @apply px-3 py-2.5 text-xs font-bold;
     color: var(--txt-2);
@@ -233,6 +234,13 @@
 
 @keyframes fadeIn  { from { opacity: 0 }                     to { opacity: 1 } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: translateY(0) } }
+
+/* شاشة تسجيل الدخول — فقاعات خلفية عائمة بهدوء */
+.login-blob { animation: loginFloat 9s ease-in-out infinite; }
+@keyframes loginFloat {
+  0%, 100% { transform: translate(0, 0); }
+  50%      { transform: translate(16px, -20px); }
+}
 
 /* ===== تحسينات بصرية ===== */
 
@@ -324,6 +332,10 @@
 /* text-2xs */
 .text-2xs { font-size: 0.65rem; line-height: 1rem; }
 
+/* جداول مكثّفة — لوحة المعلومات (صفوف أقصر لتقليل الحاجة للتمرير) */
+.dash-compact-table .th,
+.dash-compact-table .td { padding: 2px 6px !important; font-size: 0.6rem !important; line-height: 1.1rem !important; }
+
 /* ===== أرقام إنجليزية بولد وأوضح في كل البرنامج ===== */
 .tabular-nums {
   font-variant-numeric: tabular-nums;
@@ -401,32 +413,36 @@ td .tabular-nums {
   --app-bg-end:   #eef2f7;
   --app-bg-solid: #f6f8fa;
 
-  /* القائمة الجانبية — احترافي رمادي مزرق فاتح (14-Jun) */
-  --sidebar-bg:        linear-gradient(180deg, #f1f5fb 0%, #e8eef8 50%, #f1f5fb 100%);
-  --sidebar-border:    #c2cee0;
-  --sidebar-active-bg: linear-gradient(135deg, rgba(30,58,138,0.14), rgba(59,130,246,0.08));
-  --sidebar-active-border: rgba(30, 58, 138, 0.40);
-  --sidebar-active-glow:   rgba(30, 58, 138, 0.18);
-  --sidebar-hover:     rgba(30, 58, 138, 0.07);
-  --sidebar-text:      #1e293b;
-  --sidebar-text-active: #1e3a8a;
-  --sidebar-group:     #475569;
+  /* القائمة الجانبية — كحلي/ذهبي فاخر (يطابق هوية شاشة الدخول)، مريح للعين ويقلّل التشتت البصري */
+  --sidebar-bg:        linear-gradient(180deg, #1e1b4b 0%, #16143a 50%, #1e1b4b 100%);
+  --sidebar-border:    rgba(212,160,23,0.20);
+  --sidebar-active-bg: linear-gradient(135deg, rgba(212,160,23,0.22), rgba(212,160,23,0.08));
+  --sidebar-active-border: rgba(212,160,23,0.5);
+  --sidebar-active-glow:   rgba(212,160,23,0.28);
+  --sidebar-hover:     rgba(255,255,255,0.06);
+  --sidebar-text:      #dbe4f5;
+  --sidebar-text-active: #fcd34d;
+  --sidebar-group:     #94a7d4;
 
-  /* الشريط العلوي — Navy خفيف احترافي */
-  --topbar-bg:     linear-gradient(180deg, #ffffff 0%, #f1f5f9 100%);
-  --topbar-border: #cbd5e1;
-  --topbar-text:   #0f172a;
-  --topbar-muted:  #64748b;
+  /* الشريط العلوي — نفس الهوية الكحلية/الذهبية */
+  --topbar-bg:     linear-gradient(180deg, #221d54 0%, #1e1b4b 100%);
+  --topbar-border: rgba(212,160,23,0.22);
+  --topbar-text:   #f8fafc;
+  --topbar-muted:  #a5b4fc;
 
   /* الشريط السفلي */
-  --statusbar-bg:     #f1f5f9;
-  --statusbar-border: #cbd5e1;
-  --statusbar-text:   #475569;
+  --statusbar-bg:     #1a1744;
+  --statusbar-border: rgba(212,160,23,0.18);
+  --statusbar-text:   #c7d2fe;
 
-  /* لون التمييز الأساسي */
+  /* لون التمييز الأساسي — عام لكل الصفحات (لا يُغيَّر هنا حتى لا يؤثر خارج الشريط العلوي/السفلي/الجانبي) */
   --accent:        #1e3a8a;
   --accent-strong: #1e40af;
   --accent-deep:   #1e3a8a;
+}
+/* شريط تمييز العنصر النشط في القائمة الجانبية — ذهبي في الوضع الفاتح ليطابق هوية الشريط الجانبي الكحلية الجديدة */
+[data-theme="light"] .aj-active-stripe {
+  background: linear-gradient(180deg, #e3b341, #d4a017) !important;
 }
 
 /* ===== الوضع الفاتح ===== */

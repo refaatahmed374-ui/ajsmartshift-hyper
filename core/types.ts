@@ -26,6 +26,7 @@ export type Permission =
   | 'users.manage'        // إدارة المستخدمين
   | 'backup.manage'       // إدارة النسخ الاحتياطي
   | 'categories.manage'   // إدارة التصنيفات
+  | 'journal.import'      // استيراد اليومية من Excel
 
 export const ALL_PERMISSIONS: { key: Permission; label: string }[] = [
   { key: 'sale.create',       label: 'بيع'                 },
@@ -41,6 +42,7 @@ export const ALL_PERMISSIONS: { key: Permission; label: string }[] = [
   { key: 'users.manage',      label: 'إدارة المستخدمين'     },
   { key: 'backup.manage',     label: 'إدارة النسخ الاحتياطي'},
   { key: 'categories.manage', label: 'إدارة التصنيفات'      },
+  { key: 'journal.import',    label: 'استيراد اليومية (Excel)' },
 ]
 
 // الصلاحيات الافتراضية حسب الدور
@@ -54,7 +56,8 @@ export const DEFAULT_PERMISSIONS: Record<Role, Permission[]> = {
 }
 export type ShiftType = 'morning' | 'evening' | 'between'
 export type ShiftStatus = 'open' | 'review' | 'approved'
-export type PayMethod = 'cashier' | 'management' | 'credit' | 'visa'
+// طرق الدفع — نوعان فقط (كاشير/إدارة). الآجل والفيزا يُتتبَّعان بالتصنيف الفرعي لا بطريقة الدفع.
+export type PayMethod = 'cashier' | 'management'
 export type BalanceStatus = 'balanced' | 'deficit' | 'surplus'
 
 // ===== المستخدمون =====
@@ -221,13 +224,18 @@ export interface ShiftFawry {
   // كاش أوت
   cashoutReceive: number
   cashoutDeliver: number
+  // كاش أوت (يدوي — ADR-012 v2)
+  cashoutAdd: number
+  cashoutDiscount: number
   // تحويلات
   fawryToBasic: number
   fawryToAir: number
   cashoutToBasic: number
   cashoutToAir: number
-  // مبيعات البرنامج (يدوي)
+  // مبيعات فوري قبل العمولة (يدوي)
   programSales: number
+  // نسبة عمولة فوري (يدوي) — مخزّنة ×100 (مثال: 2.00% = 200) — ADR-012 v2
+  commissionPct: number
   // العمليات
   firstVoucher: number
   lastVoucher: number

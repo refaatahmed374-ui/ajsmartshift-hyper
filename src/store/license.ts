@@ -63,7 +63,9 @@ export const useLicense = create<LicenseState>((set, get) => ({
     try {
       const s = await call(api.license.status()) as LicenseStatus
       set({ status: s })
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('Failed to load license status:', err)
+    }
     finally { set({ loading: false }) }
     // تحقق أونلاين في الخلفية (لا يعطّل الفتح)
     get().refresh()
@@ -73,7 +75,9 @@ export const useLicense = create<LicenseState>((set, get) => ({
     try {
       const s = await call(api.license.refresh()) as LicenseStatus
       if (s) set({ status: s })
-    } catch { /* offline — نبقى على الذاكرة */ }
+    } catch (err) {
+      console.error('Failed to refresh license status (maybe offline):', err)
+    }
   },
 
   activate: async (key) => {

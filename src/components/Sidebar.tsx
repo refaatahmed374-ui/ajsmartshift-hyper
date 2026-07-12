@@ -10,7 +10,7 @@ type Page =
   | 'dashboard' | 'daily' | 'reports' | 'employees'
   | 'settings'  | 'users' | 'backup'  | 'treasury'
   | 'fawry'     | 'categories' | 'about'
-  | 'customers' | 'suppliers'
+  | 'customers' | 'suppliers' | 'importExcel'
 
 interface NavItem {
   id:    Page
@@ -44,6 +44,7 @@ const NAV: NavItem[] = [
   { id: 'employees',     label: 'إدارة الموظفين',     icon: <Icons.Employees  size={17}/>, roles: ['manager','supervisor'] },
   { id: 'users',         label: 'صلاحيات المستخدمين', icon: <Icons.User       size={17}/>, roles: ['manager'] },
   { id: 'reports',       label: 'التقارير',           icon: <Icons.Reports    size={17}/>, roles: ['manager','supervisor'] },
+  { id: 'importExcel',   label: 'استيراد اليومية',    icon: <Icons.Download   size={17}/>, roles: ['manager'] },
   { id: 'categories',    label: 'إدارة التصنيفات',    icon: <Icons.Plus       size={17}/>, roles: ['manager'] },
   { id: 'settings',      label: 'إعدادات النظام',     icon: <Icons.Settings   size={17}/>, roles: ['manager'] },
   { id: 'about',         label: 'حول البرنامج',       icon: <Icons.Info       size={17}/>, roles: ['manager','supervisor','cashier'] },

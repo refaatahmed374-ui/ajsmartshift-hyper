@@ -3,10 +3,13 @@ import { api, call } from '../lib/api'
 import { useToast } from '../store/toast'
 import Icons from '../components/Icon'
 import KPICard from '../components/KPICard'
+import ShiftSheet from '../components/ShiftSheet'
 import Treasury from './Treasury'
 import { fmt, fmtDate, shiftTypeLabel, parsePias } from '../lib/format'
 import { generateShiftReportPDF } from '../lib/shiftReport'
-import type { Shift, Transaction, EmployeeFinancials } from '../../core/types'
+import { calcShiftClosing, calcFawry } from '../../core/engine'
+import { APP_VERSION } from '../version'
+import type { Shift, Transaction, EmployeeFinancials, ShiftFawry } from '../../core/types'
 
 type Tab = 'journal' | 'cashier_rep' | 'admin_rep' | 'monthly_close' | 'annual_close' | 'sales' | 'purchases' | 'expenses' | 'employees' | 'financial'
 
@@ -55,8 +58,10 @@ export default function Reports() {
     try {
       const shiftList = await call(api.shifts.getAll({ month })) as Shift[]
       setShifts(shiftList)
-      const txArrays = await Promise.all(shiftList.map(s => call(api.tx.getByShift(s.id))))
-      setAllTxs(txArrays.flat() as Transaction[])
+      // v2.31.3 — تحسين الأداء: جلب كل البنود باستعلام واحد بدلاً من N+1
+      const shiftIds = shiftList.map(s => s.id)
+      const allTransactions = await call(api.tx.getByShiftIds(shiftIds)) as Transaction[]
+      setAllTxs(allTransactions)
       setEmpFin(await call(api.emp.financials(month)) as EmployeeFinancials[])
       setBizName((await call(api.settings.get('biz.name')) as string) || '')
       setFinData(await call(api.stats.financials(month)) as FinancialData)
@@ -418,25 +423,20 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
     cashier: 'كاشير', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا',
   }
 
-  // ── نتيجة كل شيفت (أوفر/عجز/متزن) — تُحسب من البنود الفعلية ──
-  // (نفس معادلة تقرير اليومية: مصروفات الشيفت + المتبقي − POS − التحصيلات)
+  // ── نتيجة كل شيفت — المعادلة الرسمية الموحّدة (ADR-012 v2) ──
+  // الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
   type Kind = 'surplus' | 'deficit' | 'balanced'
   function shiftResult(s: Shift): { result: number; kind: Kind } {
-    const txs         = allTxs.filter(t => t.shiftId === s.id)
-    const totalOut    = txs.reduce((sm, t) => sm + t.amountOut, 0)
-    const mgmtOut     = txs.filter(t => t.payMethod === 'management').reduce((sm, t) => sm + t.amountOut, 0)
-    const expenses    = totalOut - mgmtOut
-    const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((sm, t) => sm + t.amountIn, 0)
-    const remaining   = s.cashierRemaining   ?? 0
-    const pos         = s.posSales           ?? 0
-    const result      = expenses + remaining - pos - collections
-    const kind: Kind  = result > 0 ? 'surplus' : result < 0 ? 'deficit' : 'balanced'
-    return { result, kind }
+    const txs             = allTxs.filter(t => t.shiftId === s.id)
+    const collections     = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((sm, t) => sm + t.amountIn, 0)
+    const cashierExpenses = txs.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((sm, t) => sm + t.amountIn + t.amountOut, 0)
+    const { result, status } = calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
+    return { result, kind: status }
   }
   const KIND_STYLE: Record<Kind, { bg: string; border: string; text: string; label: string; glow: string }> = {
     surplus:  { bg: 'rgba(16,185,129,0.10)', border: 'rgba(16,185,129,0.45)', text: '#10b981', label: 'أوفر',  glow: 'rgba(16,185,129,0.25)' },
     deficit:  { bg: 'rgba(239,68,68,0.10)',  border: 'rgba(239,68,68,0.45)',  text: '#ef4444', label: 'عجز',   glow: 'rgba(239,68,68,0.25)' },
-    balanced: { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.45)', text: '#f59e0b', label: 'متزن', glow: 'rgba(245,158,11,0.25)' },
+    balanced: { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.45)', text: '#f59e0b', label: 'مطابق', glow: 'rgba(245,158,11,0.25)' },
   }
 
   // ── العرض المكثّف (دبل كليك) ──
@@ -451,6 +451,8 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
   // v2.27.0 (15-Jun) — حذف يومية
   const [deleteShift, setDeleteShift] = useState<Shift | null>(null)
   const [deleting,    setDeleting]    = useState(false)
+  // ADR-012 — الشاشة الموحّدة (تحلّ محل المودال القديم)
+  const [sheetId,     setSheetId]     = useState<number | null>(null)
 
   async function confirmDelete() {
     if (!deleteShift) return
@@ -486,13 +488,12 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
     if (!viewShift) return
     setSaving(true)
     try {
-      // حفظ تعديلات الإغلاق
-      const txsTotal = viewTxs.reduce((sm, t) => sm + t.amountIn - t.amountOut, 0)
-      const expectedCash = viewShift.openingBalance + txsTotal
+      // حفظ تعديلات الإغلاق — v2.31.3: المعامل الثاني الآن هو cashierRemaining الفعلي (وليس expectedCash النظري)
+      const cashierRemaining = parsePias(closeForm.cashierRemaining || '0')
       await call(api.shifts.close(
-        viewShift.id, expectedCash,
+        viewShift.id, cashierRemaining,
         parsePias(closeForm.posSales || '0'),
-        parsePias(closeForm.cashierRemaining || '0'),
+        cashierRemaining,
       ))
       setViewShift(null)
     } catch (e) { console.error(e) }
@@ -554,7 +555,7 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
             const st = KIND_STYLE[kind]
             return (
               <div key={s.id}
-                onDoubleClick={() => openShift(s)}
+                onDoubleClick={() => setSheetId(s.id)}
                 className="text-right p-3 rounded-2xl transition-all hover:scale-[1.03] hover:shadow-lg cursor-pointer relative group"
                 style={{ background: st.bg, border: `1.5px solid ${st.border}`, boxShadow: `0 2px 12px ${st.glow}` }}>
                 {/* زر حذف اليومية */}
@@ -564,14 +565,14 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
                   title="حذف اليومية">
                   <Icons.Trash size={12} />
                 </button>
-                <div className="flex items-center justify-between mb-2" onClick={() => openShift(s)}>
+                <div className="flex items-center justify-between mb-2" onClick={() => setSheetId(s.id)}>
                   <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>{fmtDate(s.date)}</span>
                   <span className="font-black text-base" style={{ color: st.text }}>#{s.monthlyShiftNum}</span>
                 </div>
-                <div className="text-xs truncate mb-2" style={{ color: 'var(--txt-2)' }} onClick={() => openShift(s)}>
+                <div className="text-xs truncate mb-2" style={{ color: 'var(--txt-2)' }} onClick={() => setSheetId(s.id)}>
                   {shiftTypeLabel(s.type)} · {s.cashierName}
                 </div>
-                <div className="flex items-center justify-between" onClick={() => openShift(s)}>
+                <div className="flex items-center justify-between" onClick={() => setSheetId(s.id)}>
                   <span className="text-2xs px-2 py-0.5 rounded-full font-bold"
                     style={{ background: st.text + '22', color: st.text }}>{st.label}</span>
                   <span className="text-2xs tabular-nums font-bold" style={{ color: st.text }}>
@@ -755,6 +756,18 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
         </div>
       )}
 
+      {/* ═══ الشاشة الموحّدة (ADR-012) — تحلّ محل المودال القديم ═══ */}
+      {sheetId != null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}
+          onClick={() => setSheetId(null)}>
+          <div className="card" style={{ width: '96vw', maxWidth: 1440, height: '92vh', padding: 0, overflow: 'hidden' }}
+            onClick={e => e.stopPropagation()}>
+            <ShiftSheet shiftId={sheetId} onClose={() => setSheetId(null)} onDeleted={() => { setSheetId(null); onReload() }} />
+          </div>
+        </div>
+      )}
+
       {/* ═══ تأكيد حذف اليومية ═══ */}
       {deleteShift && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4"
@@ -809,7 +822,7 @@ function CashierReport({ allTxs }: { allTxs: Transaction[] }) {
 
   // توزيع المنصرف حسب الطريقة
   const totalAllOut = allTxs.reduce((s, t) => s + t.amountOut, 0)
-  const distribution = (['cashier', 'management', 'credit', 'visa'] as const).map(pm => {
+  const distribution = (['cashier', 'management'] as const).map(pm => {
     const list = allTxs.filter(t => t.payMethod === pm)
     const out  = list.reduce((s, t) => s + t.amountOut, 0)
     const inn  = list.reduce((s, t) => s + t.amountIn,  0)
@@ -1081,7 +1094,7 @@ function PayrollReportsList() {
             </tr></tfoot>
           </table>
           <div style="margin-top:14px;font-size:10px;color:#64748b;display:flex;justify-content:space-between;">
-            <span>AJ Smart Shift Hyper v2.27.0</span><span>تطوير: أحمد جلال #1637</span>
+            <span>AJ Smart Shift Hyper v${APP_VERSION}</span><span>تطوير: أحمد جلال #1637</span>
           </div>
         </div>`
       const container = document.createElement('div')
@@ -1219,7 +1232,7 @@ function AnnualCloseReport({ year }: { year: string }) {
           + '<td style="padding:9px 12px;border:1px solid #e2e8f0;color:#475569;font-weight:600;width:55%;">' + r[0] + '</td>'
           + '<td style="padding:9px 12px;border:1px solid #e2e8f0;font-weight:800;color:#1e3a8a;">' + r[1] + '</td></tr>').join('')
         + '</tbody></table>'
-        + '<div style="margin-top:14px;font-size:10px;color:#64748b;display:flex;justify-content:space-between;"><span>AJ Smart Shift Hyper v2.31.2</span><span>تطوير: أحمد جلال #1637</span></div></div>'
+        + '<div style="margin-top:14px;font-size:10px;color:#64748b;display:flex;justify-content:space-between;"><span>AJ Smart Shift Hyper v${APP_VERSION}</span><span>تطوير: أحمد جلال #1637</span></div></div>'
       const container = document.createElement('div')
       container.style.position = 'fixed'; container.style.left = '-9999px'; container.style.top = '0'
       container.innerHTML = html
@@ -1320,15 +1333,33 @@ function AnnualCloseReport({ year }: { year: string }) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// v2.27.0 (14-Jun) — تقارير التقفيل الشهري
+// v2.31.5 — تقارير التقفيل الشهري (بتنسيق شيت حورس المرجعي بالكامل)
+// أقسام: إيرادات، مصاريف مشتريات، مصاريف مبيعات، مصاريف إدارية، ماكينة فوري،
+//        حساب الكاش أوت، الصندوق، المخزون (أرصدة) — نفس ترتيب وتسمية الشيت.
 // ═══════════════════════════════════════════════════════════
 interface MonthCloseRow { id: number; month: string; data_json: string; created_at: string }
-function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
+
+// أسماء التصنيفات الفرعية المستثناة من سطر «مشتريات» العام لأنها مُفصَّلة كسطور مستقلة في التقرير
+const PURCHASE_BREAKOUT_SUBS = [
+  'مشتريات اللحوم', 'مشتريات فراخ', 'شحن ونقل', 'هوالك منتجات',
+  'إنتاج جبن', 'إنتاج فراخ', 'إنتاج لحوم', 'أدوات تغليف', 'أدوات نظافة', 'أدوات مكتبية',
+]
+
+function prevMonthKeyOf(month: string): string {
+  const d = new Date(month + '-01T00:00:00'); d.setMonth(d.getMonth() - 1)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+}
+
+function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
   month: string; shifts: Shift[]; allTxs: Transaction[];
   empFin: EmployeeFinancials[]; finData: FinancialData | null;
 }) {
   const [saved, setSaved] = useState<MonthCloseRow[]>([])
   const [busy,  setBusy]  = useState(false)
+  const [fawryMap, setFawryMap] = useState<Record<number, ShiftFawry>>({})
+  const [settingsMap, setSettingsMap] = useState<Record<string, string>>({})
+  const [prevNetProfit, setPrevNetProfit] = useState<number | null>(null)
+  const [logo, setLogo] = useState(''); const [companyName, setCompanyName] = useState('')
   const { show } = useToast()
 
   async function reload() {
@@ -1336,82 +1367,196 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
   }
   useEffect(() => { reload() }, [])
 
-  // بيانات الخزينة + مبيعات فوري + الشعار (تُجلب عند تغيّر الشهر)
-  const [treasury, setTreasury] = useState<{ prevBalance: number; monthIn: number; monthOut: number } | null>(null)
-  const [fawrySales, setFawrySales] = useState(0)
-  const [logo, setLogo] = useState(''); const [companyName, setCompanyName] = useState('')
-  // قيمة المخزون (إدخال يدوي بالجنيه)
-  const [invStart, setInvStart] = useState(''); const [invEnd, setInvEnd] = useState('')
-
   useEffect(() => {
     let alive = true
     ;(async () => {
-      try { const t = await call(api.treasury.data(month)) as any; if (alive) setTreasury(t) } catch { /* */ }
       try {
-        const fawries = await Promise.all(shifts.map(sh => call(api.fawry.get(sh.id)).catch(() => null)))
-        if (alive) setFawrySales(fawries.reduce((s: number, f: any) => s + (f?.programSales ?? 0), 0))
+        const records = await Promise.all(shifts.map(sh => call<ShiftFawry | null>(api.fawry.get(sh.id)).catch(() => null)))
+        if (!alive) return
+        const fm: Record<number, ShiftFawry> = {}
+        shifts.forEach((sh, i) => { const r = records[i]; if (r) fm[sh.id] = r })
+        setFawryMap(fm)
       } catch { /* */ }
       try {
         const st = await call(api.settings.getAll()) as { key: string; value: string }[]
-        if (alive) { setLogo(st.find(x => x.key === 'biz.logo')?.value ?? ''); setCompanyName(st.find(x => x.key === 'biz.name')?.value ?? '') }
+        if (!alive) return
+        const sm: Record<string, string> = {}
+        for (const row of st) sm[row.key] = row.value
+        setSettingsMap(sm)
+        setLogo(sm['biz.logo'] ?? ''); setCompanyName(sm['biz.name'] ?? '')
       } catch { /* */ }
+      try {
+        const prev = await call(api.monthlyClose.get(prevMonthKeyOf(month))) as MonthCloseRow | null
+        if (!alive) return
+        if (prev) { try { setPrevNetProfit(JSON.parse(prev.data_json).netProfit ?? null) } catch { setPrevNetProfit(null) } }
+        else setPrevNetProfit(null)
+      } catch { setPrevNetProfit(null) }
     })()
     return () => { alive = false }
   }, [month, shifts])
 
-  const summary = useMemo(() => {
-    const totalIn  = allTxs.reduce((s, t) => s + t.amountIn,  0)
-    const totalOut = allTxs.reduce((s, t) => s + t.amountOut, 0)
-    const posSales = shifts.reduce((s, sh) => s + (sh.posSales ?? 0), 0)
-    const visaSales = allTxs.filter(t => t.payMethod === 'visa').reduce((s, t) => s + t.amountIn, 0)
-    const cashOpening = treasury?.prevBalance ?? 0
-    const cashierAdded = treasury?.monthIn ?? 0
-    const mgmtSpent = treasury?.monthOut ?? 0
-    const cashClosing = cashOpening + cashierAdded - mgmtSpent
-    const invStartP = parsePias(invStart || '0'), invEndP = parsePias(invEnd || '0')
-    const dueSalaries = empFin.reduce((s, f) => s + (f.dueSalary ?? 0), 0)
-    return {
-      shiftsCount: shifts.length, itemsCount: allTxs.length,
-      totalIn, totalOut, posSales, fawrySales, visaSales,
-      cashOpening, cashierAdded, mgmtSpent, cashClosing,
-      invStart: invStartP, invEnd: invEndP, invDiff: invEndP - invStartP,
-      purchases: finData?.purchases ?? 0, expenses: finData?.expenses ?? 0,
-      employees: empFin.length, dueSalaries,
+  // قيم يدوية محفوظة لكل شهر عبر settings (مخزون بضاعة/لحوم + أرصدة فوري الافتتاحية)
+  function manualPias(key: string): number { return Number(settingsMap[`${key}.${month}`] ?? 0) }
+  async function saveManual(key: string, egp: string) {
+    const val = Math.round((parseFloat(egp) || 0) * 100)
+    const fullKey = `${key}.${month}`
+    try { await call(api.settings.set(fullKey, String(val))); setSettingsMap(sm => ({ ...sm, [fullKey]: String(val) })) }
+    catch (e) { show((e as Error).message, 'error') }
+  }
+
+  const D = useMemo(() => {
+    const tx = allTxs // مُفلترة أصلاً على الشهر من المكوّن الأب
+    const byMainSub = (main: string, sub: string) => tx.filter(t => t.mainCategoryName === main && t.subCategoryName === sub).reduce((a, t) => a + t.amountOut, 0)
+    const byMainSubIn = (main: string, sub: string) => tx.filter(t => t.mainCategoryName === main && t.subCategoryName === sub).reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+    const byMainNoSub = (main: string, excludeSubs: string[]) => tx.filter(t => t.mainCategoryName === main && !excludeSubs.includes(t.subCategoryName)).reduce((a, t) => a + t.amountOut, 0)
+    const mainTotal = (main: string) => tx.filter(t => t.mainCategoryName === main).reduce((a, t) => a + t.amountOut, 0)
+
+    // ═══ إيرادات ═══
+    const posSales = shifts.reduce((a, s) => a + (s.posSales ?? 0), 0)
+    let basicSales = 0, airSales = 0, fawryProfitability = 0, fawryToBasicTotal = 0, fawryToAirTotal = 0
+    let cashoutAddTotal = 0, cashoutDiscountTotal = 0, cashoutToBasicTotal = 0, cashoutToAirTotal = 0, fawryCommission = 0
+    for (const s of shifts) {
+      const f = fawryMap[s.id]
+      if (!f) continue
+      const r = calcFawry(f)
+      basicSales += r.basicSales; airSales += r.airSales; fawryProfitability += r.profitability
+      fawryToBasicTotal += f.fawryToBasic; fawryToAirTotal += f.fawryToAir
+      cashoutToBasicTotal += f.cashoutToBasic; cashoutToAirTotal += f.cashoutToAir
+      const cashoutDiff = r.cashoutSales // تسليم − استلام
+      if (cashoutDiff > 0) cashoutAddTotal += cashoutDiff; else cashoutDiscountTotal += -cashoutDiff
+      const visaThisShift = tx.filter(t => t.shiftId === s.id && t.subCategoryName === 'مبيعات فيزا').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+      fawryCommission += visaThisShift - cashoutDiff
     }
-  }, [shifts, allTxs, empFin, finData, treasury, fawrySales, invStart, invEnd])
+    const fawrySales = basicSales + airSales
+    const totalSales = posSales + fawrySales
+    const meatSales = byMainSubIn('مبيعات', 'مبيعات لحوم')
+    const deliverySales = byMainSubIn('مبيعات', 'مبيعات توصيل')
+
+    // ═══ مصاريف مشتريات ═══
+    const purchasesGeneral = byMainNoSub('مشتريات', PURCHASE_BREAKOUT_SUBS)
+    const purchaseReturns = byMainSub('مرتجعات', 'مرتجع مشتريات')
+    const shipping = byMainSub('مشتريات', 'شحن ونقل')
+    const meatPurchases = byMainSub('مشتريات', 'مشتريات اللحوم')
+    const poultryPurchases = byMainSub('مشتريات', 'مشتريات فراخ')
+    const productWaste = byMainSub('مشتريات', 'هوالك منتجات')
+
+    // ═══ مصاريف مبيعات ═══
+    const salesDiscounts = byMainSub('خصومات', 'خصومات البيع')
+    let surplus = 0, deficit = 0
+    // نثق بالحقول المحفوظة على الشيفت نفسه (shift_expenses / cashier_collections) بدل إعادة
+    // اشتقاقها من بنود اليومية — فهذه الحقول تُصالَح مع رقم الشيت المرجعي عند الاستيراد
+    // (انظر overrideShiftExpenses في pipeline.ts)، وتُحدَّث بنفس المنطق عند الإدخال اليدوي.
+    for (const s of shifts) {
+      const { result } = calcShiftClosing({
+        posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0,
+        cashierExpenses: s.shiftExpenses ?? 0, collections: s.cashierCollections ?? 0,
+      })
+      if (result > 0) surplus += result; else if (result < 0) deficit += -result
+    }
+    const meatProduction = byMainSub('مشتريات', 'إنتاج لحوم')
+    const poultryProduction = byMainSub('مشتريات', 'إنتاج فراخ')
+    const cheeseProduction = byMainSub('مشتريات', 'إنتاج جبن')
+    const salesReturns = byMainSub('مرتجعات', 'مرتجع مبيعات')
+
+    // ═══ مصاريف إدارية ═══
+    const wages = mainTotal('أجور')
+    const rent = byMainSub('مصروفات', 'إيجار')
+    const assetDepreciation = byMainSub('مصروفات', 'اهلاك أصول')
+    const water = byMainSub('مصروفات', 'مياة')
+    const electricity = byMainSub('مصروفات', 'كهرباء')
+    const insurance = byMainSub('مصروفات', 'تأمينات')
+    const facilities = byMainSub('مصروفات', 'مرافق')
+    const govFees = byMainSub('مصروفات', 'مصاريف حكومية')
+    const phoneInternet = byMainSub('مصروفات', 'تليفون وإنترنت')
+    const maintenance = byMainSub('مصروفات', 'صيانة')
+    const officeSupplies = byMainSub('مشتريات', 'أدوات مكتبية')
+    const cleaningExpenses = byMainSub('مشتريات', 'أدوات نظافة')
+    const packagingTools = byMainSub('مشتريات', 'أدوات تغليف')
+
+    // ═══ حساب الكاش أوت ═══
+    const visaSales = byMainSubIn('مبيعات', 'مبيعات فيزا')
+    const commissionRatio = visaSales > 0 ? (fawryCommission / visaSales) * 100 : 0
+
+    // ═══ الصندوق ═══
+    const sortedShifts = [...shifts].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime))
+    const firstShift = sortedShifts[0]
+    const fundOpening = firstShift ? Number(settingsMap[`fund.prev.${firstShift.id}`] ?? 0) * 100 : 0
+    const fundCashIn = shifts.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
+    const fundExpenses = tx.filter(t => t.payMethod === 'management').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+    const fundClosing = fundOpening + fundCashIn - fundExpenses
+
+    // صافي الربح — نفس معادلة لوحة المعلومات (إجمالي المبيعات − مشتريات − مصروفات − أجور) للاتساق بين الشاشتين
+    const netProfit = totalSales - mainTotal('مشتريات') - mainTotal('مصروفات') - wages
+
+    // ═══ المخزون (أرصدة) — بضاعة عامة يدوية + لحوم يدوية + أرصدة فوري تراكمية (افتتاحي يدوي + ختامي محسوب) ═══
+    const invStart = manualPias('mc.inv.start'), invEnd = manualPias('mc.inv.end')
+    const meatInvStart = manualPias('mc.meatInv.start'), meatInvEnd = manualPias('mc.meatInv.end')
+    const basicBalOpen = manualPias('mc.fawryBal.basic'), basicBalClose = basicBalOpen + basicSales
+    const airBalOpen = manualPias('mc.fawryBal.air'), airBalClose = airBalOpen + airSales
+    const cashoutBalOpen = manualPias('mc.fawryBal.cashout'), cashoutBalClose = cashoutBalOpen + (cashoutAddTotal - cashoutDiscountTotal)
+
+    return {
+      // توافق خلفي مع تقرير التقفيل السنوي (نفس أسماء الحقول القديمة)
+      shiftsCount: shifts.length, itemsCount: tx.length,
+      totalIn: tx.reduce((a, t) => a + t.amountIn, 0), totalOut: tx.reduce((a, t) => a + t.amountOut, 0),
+      posSales, fawrySales, visaSales, cashierAdded: fundCashIn, mgmtSpent: fundExpenses,
+      cashOpening: fundOpening, cashClosing: fundClosing,
+      invStart, invEnd, invDiff: invEnd - invStart,
+      employees: empFin.length, dueSalaries: empFin.reduce((a, f) => a + (f.dueSalary ?? 0), 0),
+      // الأقسام التفصيلية الجديدة (شيت حورس)
+      totalSales, meatSales, deliverySales,
+      purchasesGeneral, purchaseReturns, shipping, meatPurchases, poultryPurchases, productWaste,
+      salesDiscounts, surplus, deficit, meatProduction, poultryProduction, cheeseProduction, salesReturns,
+      wages, rent, assetDepreciation, water, electricity, insurance, facilities, govFees, phoneInternet, maintenance, officeSupplies, cleaningExpenses, packagingTools,
+      basicSales, airSales, fawryProfitability, fawryToBasicTotal, fawryToAirTotal,
+      fawryCommission, cashoutAddTotal, cashoutDiscountTotal, commissionRatio, cashoutToBasicTotal, cashoutToAirTotal,
+      fundOpening, fundExpenses, fundClosing, fundCashIn, netProfit,
+      meatInvStart, meatInvEnd, basicBalOpen, basicBalClose, airBalOpen, airBalClose, cashoutBalOpen, cashoutBalClose,
+    }
+  }, [shifts, allTxs, empFin, fawryMap, settingsMap, month])
 
   async function closeMonth() {
     setBusy(true)
     try {
-      await call(api.monthlyClose.save(month, JSON.stringify(summary)))
+      await call(api.monthlyClose.save(month, JSON.stringify(D)))
       show('تم تقفيل شهر ' + month + ' وحفظه', 'success')
       await reload()
     } catch (e) { show((e as Error).message, 'error') }
     finally { setBusy(false) }
   }
 
-  async function exportClosePDF(monthStr: string, data: typeof summary) {
+  async function exportClosePDF(monthStr: string, data: typeof D) {
     try {
       const rows: [string, string][] = [
-        ['عدد الشيفتات', String(data.shiftsCount)],
-        ['عدد البنود', String(data.itemsCount)],
-        ['إجمالي الوارد', fmt(data.totalIn) + ' ج'],
-        ['إجمالي المنصرف', fmt(data.totalOut) + ' ج'],
-        ['مبيعات POS', fmt(data.posSales) + ' ج'],
-        ['مبيعات فوري', fmt(data.fawrySales) + ' ج'],
-        ['مبيعات الفيزا', fmt(data.visaSales) + ' ج'],
-        ['— حركة الصندوق —', ''],
-        ['رصيد الصندوق أول الشهر', fmt(data.cashOpening) + ' ج'],
-        ['المضاف من نقدية الكاشير', fmt(data.cashierAdded) + ' ج'],
-        ['المنصرف من الإدارة', fmt(data.mgmtSpent) + ' ج'],
-        ['الرصيد الختامي للصندوق', fmt(data.cashClosing) + ' ج'],
-        ['— المخزون (بضاعة) —', ''],
-        ['قيمة المخزون أول الشهر', fmt(data.invStart) + ' ج'],
-        ['قيمة المخزون نهاية الشهر', fmt(data.invEnd) + ' ج'],
-        ['الفرق (± المخزون)', (data.invDiff >= 0 ? '+' : '−') + fmt(Math.abs(data.invDiff)) + ' ج'],
-        ['— أخرى —', ''],
-        ['عدد الموظفين', String(data.employees)],
-        ['رواتب مستحقة', fmt(data.dueSalaries) + ' ج'],
+        ['— إيرادات —', ''],
+        ['اجمالي مبيعات', fmt(data.totalSales) + ' ج'], ['مبيعات منتجات', fmt(data.posSales) + ' ج'],
+        ['مبيعات فوري', fmt(data.fawrySales) + ' ج'], ['مبيعات لحوم', fmt(data.meatSales) + ' ج'], ['مبيعات دليفري', fmt(data.deliverySales) + ' ج'],
+        ['— مصاريف مشتريات —', ''],
+        ['مشتريات', fmt(data.purchasesGeneral) + ' ج'], ['مرتجع مشتريات', fmt(data.purchaseReturns) + ' ج'],
+        ['شحن ونقل', fmt(data.shipping) + ' ج'], ['مشتريات لحوم', fmt(data.meatPurchases) + ' ج'],
+        ['مشتريات فراخ', fmt(data.poultryPurchases) + ' ج'], ['هوالك منتجات', fmt(data.productWaste) + ' ج'],
+        ['— مصاريف مبيعات —', ''],
+        ['خصومات البيع', fmt(data.salesDiscounts) + ' ج'], ['اوفر', fmt(data.surplus) + ' ج'], ['عجز', fmt(data.deficit) + ' ج'],
+        ['انتاج لحوم', fmt(data.meatProduction) + ' ج'], ['انتاج فراخ', fmt(data.poultryProduction) + ' ج'],
+        ['انتاج جبن', fmt(data.cheeseProduction) + ' ج'], ['مرتجع مبيعات', fmt(data.salesReturns) + ' ج'],
+        ['— مصاريف إدارية —', ''],
+        ['أجور', fmt(data.wages) + ' ج'], ['ايجار', fmt(data.rent) + ' ج'], ['اهلاك أصول', fmt(data.assetDepreciation) + ' ج'],
+        ['مياة', fmt(data.water) + ' ج'], ['كهرباء', fmt(data.electricity) + ' ج'], ['تأمينات', fmt(data.insurance) + ' ج'],
+        ['مرافق', fmt(data.facilities) + ' ج'], ['مصاريف حكومية', fmt(data.govFees) + ' ج'], ['تليفون وانترنت', fmt(data.phoneInternet) + ' ج'],
+        ['صيانة', fmt(data.maintenance) + ' ج'], ['أدوات مكتبية', fmt(data.officeSupplies) + ' ج'],
+        ['مصاريف نظافة', fmt(data.cleaningExpenses) + ' ج'], ['أدوات تغليف', fmt(data.packagingTools) + ' ج'],
+        ['— ماكينة فوري —', ''],
+        ['مبيعات اساسي', fmt(data.basicSales) + ' ج'], ['مبيعات اير تايم', fmt(data.airSales) + ' ج'], ['ربحية فوري', fmt(data.fawryProfitability) + ' ج'],
+        ['من فوري للاساسي', fmt(data.fawryToBasicTotal) + ' ج'], ['من فوري للايرتايم', fmt(data.fawryToAirTotal) + ' ج'],
+        ['— حساب الكاش اوت —', ''],
+        ['مبيعات فيزا', fmt(data.visaSales) + ' ج'], ['عمولة فوري', fmt(data.fawryCommission) + ' ج'],
+        ['اضافة كاش اوت', fmt(data.cashoutAddTotal) + ' ج'], ['خصم كاش اوت', fmt(data.cashoutDiscountTotal) + ' ج'],
+        ['ميزان النسبة', data.commissionRatio.toFixed(2) + '%'],
+        ['من كاش للرئيسي', fmt(data.cashoutToBasicTotal) + ' ج'], ['من كاش للايرتايم', fmt(data.cashoutToAirTotal) + ' ج'],
+        ['— الصندوق —', ''],
+        ['رصيد سابق', fmt(data.fundOpening) + ' ج'], ['مصروفات', fmt(data.fundExpenses) + ' ج'],
+        ['رصيد اخر', fmt(data.fundClosing) + ' ج'], ['نقدية', fmt(data.fundCashIn) + ' ج'],
+        ['ارباح مرحلة', prevNetProfit !== null ? fmt(prevNetProfit) + ' ج' : '—'],
       ]
       const JPEG_Q = 0.85
       const logoHtml = logo
@@ -1423,12 +1568,12 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
         + '<div style="font-size:11px;opacity:.85;">' + new Date().toLocaleDateString('ar-EG') + '</div></div>'
         + '<table style="width:100%;font-size:13px;border-collapse:collapse;border:1px solid #cbd5e1;"><tbody>'
         + rows.map((r, i) => r[1] === ''
-          ? '<tr style="background:#ede9fe;"><td colspan="2" style="padding:7px 12px;border:1px solid #e2e8f0;color:#6d28d9;font-weight:800;text-align:center;">' + r[0] + '</td></tr>'
+          ? '<tr style="background:#fef9c3;"><td colspan="2" style="padding:7px 12px;border:1px solid #e2e8f0;color:#854d0e;font-weight:800;text-align:center;">' + r[0] + '</td></tr>'
           : '<tr style="background:' + (i % 2 === 0 ? '#f8fafc' : '#fff') + ';">'
           + '<td style="padding:9px 12px;border:1px solid #e2e8f0;color:#475569;font-weight:600;width:55%;">' + r[0] + '</td>'
           + '<td style="padding:9px 12px;border:1px solid #e2e8f0;font-weight:800;color:#1e3a8a;">' + r[1] + '</td></tr>').join('')
         + '</tbody></table>'
-        + '<div style="margin-top:14px;font-size:10px;color:#64748b;display:flex;justify-content:space-between;"><span>AJ Smart Shift Hyper v2.31.2</span><span>تطوير: أحمد جلال #1637</span></div></div>'
+        + '<div style="margin-top:14px;font-size:10px;color:#64748b;display:flex;justify-content:space-between;"><span>AJ Smart Shift Hyper v${APP_VERSION}</span><span>تطوير: أحمد جلال #1637</span></div></div>'
       const container = document.createElement('div')
       container.style.position = 'fixed'; container.style.left = '-9999px'; container.style.top = '0'
       container.innerHTML = html
@@ -1444,13 +1589,45 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
     } catch (e) { console.error(e) }
   }
 
+  // صف عادي (البيان يمين، القيمة يسار — تناسق مع اتجاه RTL)
+  function Line({ label, value, accent }: { label: string; value: number; accent?: string }) {
+    return (
+      <tr className="tr">
+        <td className="td" style={{ color: 'var(--txt-2)' }}>{label}</td>
+        <td className="td text-left tabular-nums font-bold" style={{ color: accent ?? 'var(--txt-1)' }}>
+          {value === 0 ? <span style={{ color: 'var(--txt-3)' }}>—</span> : `${fmt(value)} ج`}
+        </td>
+      </tr>
+    )
+  }
+  function EditableLine({ label, settingKey }: { label: string; settingKey: string }) {
+    const val = manualPias(settingKey)
+    const [v, setV] = useState(String(val / 100))
+    useEffect(() => { setV(String(val / 100)) }, [val])
+    return (
+      <tr className="tr">
+        <td className="td" style={{ color: '#4ade80' }}>✎ {label}</td>
+        <td className="td text-left">
+          <input value={v} onChange={e => setV(e.target.value)} onBlur={() => saveManual(settingKey, v)}
+            className="tabular-nums font-bold text-left w-28" style={{
+              background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)',
+              borderRadius: 6, padding: '3px 8px', color: '#4ade80', fontSize: 13, outline: 'none',
+            }} />
+        </td>
+      </tr>
+    )
+  }
+  function SectionHeader({ label, color, bg }: { label: string; color: string; bg: string }) {
+    return <tr><td colSpan={2} className="text-center font-extrabold" style={{ padding: '7px 12px', background: bg, color, fontSize: 12.5 }}>{label}</td></tr>
+  }
+
   const cards = [
-    { label: 'مبيعات POS', value: fmt(summary.posSales) + ' ج', color: '#3b82f6' },
-    { label: 'مبيعات فوري', value: fmt(summary.fawrySales) + ' ج', color: '#8b5cf6' },
-    { label: 'مبيعات الفيزا', value: fmt(summary.visaSales) + ' ج', color: '#06b6d4' },
-    { label: 'المنصرف من الإدارة', value: fmt(summary.mgmtSpent) + ' ج', color: '#ef4444' },
-    { label: 'الرصيد الختامي', value: fmt(summary.cashClosing) + ' ج', color: '#22c55e' },
-    { label: 'فرق المخزون', value: (summary.invDiff >= 0 ? '+' : '−') + fmt(Math.abs(summary.invDiff)) + ' ج', color: '#f59e0b' },
+    { label: 'اجمالي مبيعات', value: fmt(D.totalSales) + ' ج', color: '#3b82f6' },
+    { label: 'مبيعات فوري', value: fmt(D.fawrySales) + ' ج', color: '#8b5cf6' },
+    { label: 'مبيعات فيزا', value: fmt(D.visaSales) + ' ج', color: '#06b6d4' },
+    { label: 'ميزان النسبة (عمولة فوري)', value: D.commissionRatio.toFixed(2) + '%', color: '#f59e0b' },
+    { label: 'رصيد اخر الصندوق', value: fmt(D.fundClosing) + ' ج', color: '#22c55e' },
+    { label: 'صافي الربح', value: fmt(D.netProfit) + ' ج', color: D.netProfit >= 0 ? '#22c55e' : '#ef4444' },
   ]
 
   return (
@@ -1461,7 +1638,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
         </div>
         <div>
           <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--txt-1)' }}>تقارير التقفيل الشهري</div>
-          <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>ملخّص شامل لكل العمليات الحسابية — يُحفظ للرجوع إليه</div>
+          <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>بنفس تنسيق وحسابات شيت التقفيل المرجعي — يُحفظ للرجوع إليه</div>
         </div>
         <button onClick={closeMonth} disabled={busy} className="btn-primary mr-auto" style={{ fontSize: 12, padding: '8px 18px' }}>
           {busy ? <><Icons.Refresh size={13} className="animate-spin" /> جاري...</> : <><Icons.Lock size={13} /> تقفيل شهر {month}</>}
@@ -1477,31 +1654,97 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
         ))}
       </div>
 
-      {/* قيمة المخزون (بضاعة) — إدخال يدوي قبل التقفيل */}
-      <div className="card">
-        <div className="flex items-center gap-2 mb-3">
-          <span style={{ fontSize: 15 }}>📦</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>قيمة المخزون (بضاعة) — أدخلها قبل التقفيل</span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <div>
-            <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>قيمة المخزون أول الشهر (رصيد أول)</label>
-            <input className="field tabular-nums" type="number" min={0} value={invStart}
-              onChange={e => setInvStart(e.target.value)} placeholder="0" />
-          </div>
-          <div>
-            <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>قيمة المخزون نهاية الشهر (رصيد آخر)</label>
-            <input className="field tabular-nums" type="number" min={0} value={invEnd}
-              onChange={e => setInvEnd(e.target.value)} placeholder="0" />
-          </div>
-          <div>
-            <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>الفرق (يُحسب تلقائياً)</label>
-            <div className="field tabular-nums flex items-center font-bold"
-              style={{ color: summary.invDiff >= 0 ? '#22c55e' : '#ef4444' }}>
-              {(summary.invDiff >= 0 ? '+' : '−') + fmt(Math.abs(summary.invDiff))} ج
-            </div>
-          </div>
-        </div>
+      {/* الجدول الرئيسي — نفس بنية شيت حورس بالكامل: البيان | القيمة */}
+      <div className="card p-0 overflow-hidden">
+        <table className="w-full text-xs">
+          <thead className="sticky top-0 z-10"><tr>
+            <th className="th">البيان</th>
+            <th className="th text-left">القيمة</th>
+          </tr></thead>
+          <tbody>
+            <SectionHeader label="إيرادات" color="#854d0e" bg="rgba(234,179,8,0.22)" />
+            <Line label="اجمالي مبيعات" value={D.totalSales} accent="#3b82f6" />
+            <Line label="مبيعات منتجات" value={D.posSales} />
+            <Line label="مبيعات فوري" value={D.fawrySales} />
+            <Line label="مبيعات لحوم" value={D.meatSales} />
+            <Line label="مبيعات دليفري" value={D.deliverySales} />
+
+            <SectionHeader label="مصاريف مشتريات" color="#854d0e" bg="rgba(234,179,8,0.22)" />
+            <Line label="مشتريات" value={D.purchasesGeneral} />
+            <Line label="مرتجع مشتريات" value={D.purchaseReturns} />
+            <Line label="شحن ونقل" value={D.shipping} />
+            <Line label="مشتريات لحوم" value={D.meatPurchases} />
+            <Line label="مشتريات فراخ" value={D.poultryPurchases} />
+            <Line label="هوالك منتجات" value={D.productWaste} />
+
+            <SectionHeader label="مصاريف مبيعات" color="#334155" bg="rgba(148,163,184,0.25)" />
+            <Line label="خصومات البيع" value={D.salesDiscounts} />
+            <Line label="اوفر" value={D.surplus} accent="#22c55e" />
+            <Line label="عجز" value={D.deficit} accent="#ef4444" />
+            <Line label="انتاج لحوم" value={D.meatProduction} />
+            <Line label="انتاج فراخ" value={D.poultryProduction} />
+            <Line label="انتاج جبن" value={D.cheeseProduction} />
+            <Line label="مرتجع مبيعات" value={D.salesReturns} />
+
+            <SectionHeader label="مصاريف إدارية" color="#854d0e" bg="rgba(234,179,8,0.22)" />
+            <Line label="أجور" value={D.wages} />
+            <Line label="ايجار" value={D.rent} />
+            <Line label="اهلاك أصول" value={D.assetDepreciation} />
+            <Line label="مياة" value={D.water} />
+            <Line label="كهرباء" value={D.electricity} />
+            <Line label="تأمينات" value={D.insurance} />
+            <Line label="مرافق" value={D.facilities} />
+            <Line label="مصاريف حكومية" value={D.govFees} />
+            <Line label="تليفون وانترنت" value={D.phoneInternet} />
+            <Line label="صيانة" value={D.maintenance} />
+            <Line label="أدوات مكتبية" value={D.officeSupplies} />
+            <Line label="مصاريف نظافة" value={D.cleaningExpenses} />
+            <Line label="أدوات تغليف" value={D.packagingTools} />
+
+            <SectionHeader label="ماكينة فوري" color="#854d0e" bg="rgba(234,179,8,0.22)" />
+            <Line label="مبيعات اساسي" value={D.basicSales} />
+            <Line label="مبيعات اير تايم" value={D.airSales} />
+            <Line label="ربحية فوري" value={D.fawryProfitability} />
+            <Line label="من فوري للاساسي" value={D.fawryToBasicTotal} />
+            <Line label="من فوري للايرتايم" value={D.fawryToAirTotal} />
+
+            <SectionHeader label="حساب الكاش اوت" color="#854d0e" bg="rgba(234,179,8,0.22)" />
+            <Line label="مبيعات فيزا" value={D.visaSales} />
+            <Line label="عمولة فوري" value={D.fawryCommission} />
+            <Line label="اضافة كاش اوت" value={D.cashoutAddTotal} accent="#22c55e" />
+            <Line label="خصم كاش اوت" value={D.cashoutDiscountTotal} accent="#ef4444" />
+            <tr className="tr">
+              <td className="td" style={{ color: 'var(--txt-2)' }}>ميزان النسبة</td>
+              <td className="td text-left tabular-nums font-bold" style={{ color: '#f59e0b' }}>{D.commissionRatio.toFixed(2)}%</td>
+            </tr>
+            <Line label="من كاش للرئيسي" value={D.cashoutToBasicTotal} />
+            <Line label="من كاش للايرتايم" value={D.cashoutToAirTotal} />
+
+            <SectionHeader label="الصندوق" color="#7c2d12" bg="rgba(249,115,22,0.22)" />
+            <Line label="رصيد سابق" value={D.fundOpening} />
+            <Line label="مصروفات" value={D.fundExpenses} accent="#ef4444" />
+            <Line label="رصيد اخر" value={D.fundClosing} accent="#22c55e" />
+            <Line label="نقدية" value={D.fundCashIn} />
+            <tr className="tr">
+              <td className="td" style={{ color: 'var(--txt-2)' }}>ارباح مرحلة <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>(صافي ربح الشهر السابق)</span></td>
+              <td className="td text-left tabular-nums font-bold" style={{ color: 'var(--txt-1)' }}>
+                {prevNetProfit !== null ? `${fmt(prevNetProfit)} ج` : <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>الشهر السابق غير مُقفل</span>}
+              </td>
+            </tr>
+
+            <SectionHeader label="المخزون (أرصدة)" color="#854d0e" bg="rgba(234,179,8,0.22)" />
+            <EditableLine label="رصيد اول منتجات" settingKey="mc.inv.start" />
+            <EditableLine label="رصيد اخر منتجات" settingKey="mc.inv.end" />
+            <EditableLine label="رصيد اول لحوم" settingKey="mc.meatInv.start" />
+            <EditableLine label="رصيد اخر لحوم" settingKey="mc.meatInv.end" />
+            <EditableLine label="رصيد اول اساسي" settingKey="mc.fawryBal.basic" />
+            <Line label="رصيد اخر اساسي" value={D.basicBalClose} />
+            <EditableLine label="رصيد اول ايرتايم" settingKey="mc.fawryBal.air" />
+            <Line label="رصيد اخر ايرتايم" value={D.airBalClose} />
+            <EditableLine label="رصيد اول كاش اوت" settingKey="mc.fawryBal.cashout" />
+            <Line label="رصيد اخر كاش اوت" value={D.cashoutBalClose} />
+          </tbody>
+        </table>
       </div>
 
       <div className="card p-0 overflow-hidden">
@@ -1514,14 +1757,13 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, finData }: {
         ) : (
           <div className="divide-y" style={{ borderColor: 'var(--inner-border)' }}>
             {saved.map(r => {
-              const d = (() => { try { return JSON.parse(r.data_json) } catch (e) { return summary } })()
+              const d = (() => { try { return JSON.parse(r.data_json) } catch { return D } })()
               return (
                 <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 flex-wrap">
                   <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: 'rgba(139,92,246,0.15)', color: '#8b5cf6' }}>{r.month}</span>
                   <span className="text-xs" style={{ color: 'var(--txt-2)' }}>{d.shiftsCount} شيفت · {d.itemsCount} بند</span>
-                  <span className="tabular-nums text-xs mr-auto" style={{ color: '#22c55e' }}>+{fmt(d.totalIn)}</span>
-                  <span className="tabular-nums text-xs" style={{ color: '#ef4444' }}>−{fmt(d.totalOut)}</span>
-                  <span className="tabular-nums text-xs font-bold" style={{ color: '#f59e0b' }}>الختامي {fmt(d.cashClosing ?? 0)}</span>
+                  <span className="tabular-nums text-xs mr-auto" style={{ color: '#22c55e' }}>مبيعات {fmt(d.totalSales ?? d.posSales ?? 0)}</span>
+                  <span className="tabular-nums text-xs font-bold" style={{ color: (d.netProfit ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>صافي {fmt(d.netProfit ?? 0)}</span>
                   <button onClick={() => exportClosePDF(r.month, d)} className="btn-next btn-sm" style={{ fontSize: 10, padding: '3px 10px' }}>📄 PDF</button>
                 </div>
               )

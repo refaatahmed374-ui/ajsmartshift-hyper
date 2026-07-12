@@ -38,6 +38,9 @@ function row2fawry(r: Record<string, unknown>): ShiftFawry {
     airDeliver:      r.air_deliver as number,
     cashoutReceive:  r.cashout_receive as number,
     cashoutDeliver:  r.cashout_deliver as number,
+    cashoutAdd:      (r.cashout_add as number) ?? 0,
+    cashoutDiscount: (r.cashout_discount as number) ?? 0,
+    commissionPct:   (r.commission_pct as number) ?? 0,
     fawryToBasic:    r.fawry_to_basic as number,
     fawryToAir:      r.fawry_to_air as number,
     cashoutToBasic:  r.cashout_to_basic as number,
@@ -136,14 +139,13 @@ export function updateShiftStatus(
 export function closeShift(
   db: Database.Database,
   shiftId: number,
-  actualCash: number,
+  cashierRemaining: number, // v2.31.3 إصلاح: تم تغيير الاسم ليعكس المعنى الصحيح
   posSales: number,
-  cashierRemaining: number
+  _cashierRemaining_ignored: number // هذا المعامل لم يعد مستخدماً
 ): void {
   // حساب التلقائيات من قاعدة البيانات مباشرة
   const collectionsRow = db.prepare(`
-    SELECT COALESCE(SUM(amount_in + amount_out), 0) AS total
-    FROM transactions WHERE shift_id = ? AND pay_method = 'cashier'
+    SELECT COALESCE(SUM(amount_in), 0) AS total FROM transactions t JOIN main_categories mc ON t.main_category_id=mc.id WHERE t.shift_id = ? AND mc.name = 'تحصيل'
   `).get(shiftId) as { total: number }
 
   // مصروفات الشيفت = إجمالي المنصرف − مدفوعات الإدارة (الإدارة تذهب للعهدة)
@@ -158,21 +160,77 @@ export function closeShift(
   db.prepare(`
     UPDATE shifts SET
       end_time           = time('now'),
-      actual_cash        = ?,
-      closing_balance    = ?,
+      closing_balance    = ?, -- الرصيد الختامي هو النقدية المتبقية
       status             = 'review',
       pos_sales          = ?,
       cashier_remaining  = ?,
       cashier_collections = ?,
       shift_expenses     = ?
     WHERE id = ?
-  `).run(actualCash, actualCash, posSales, cashierRemaining, cashierCollections, shiftExpenses, shiftId)
+  `).run(cashierRemaining, posSales, cashierRemaining, cashierCollections, shiftExpenses, shiftId)
+}
+
+// ADR-012 v2 — تحرير بيانات الشيفت (التاريخ/النوع/اسم الكاشير) يدوياً
+export function updateShiftMeta(
+  db: Database.Database,
+  shiftId: number,
+  data: { date?: string; type?: 'morning' | 'evening' | 'between'; cashierName?: string }
+): void {
+  const sets: string[] = []; const vals: (string | number)[] = []
+  if (data.date !== undefined) { sets.push('date = ?'); vals.push(data.date) }
+  if (data.type !== undefined) { sets.push('type = ?'); vals.push(data.type) }
+  if (data.cashierName !== undefined) { sets.push('cashier_name = ?'); vals.push(data.cashierName) }
+  if (!sets.length) return
+  db.prepare(`UPDATE shifts SET ${sets.join(', ')} WHERE id = ?`).run(...vals, shiftId)
+}
+
+// ADR-012 — تحديث مدخلات إغلاق الكاشير (POS + نقدية متبقية) وإعادة حساب المشتقّات
+// بنفس معادلة closeShift تماماً، لكن بلا تغيير الحالة (تحرير مباشر داخل الورقة الموحّدة).
+export function updateShiftCloseInputs(
+  db: Database.Database,
+  shiftId: number,
+  data: { posSales: number; cashierRemaining: number }
+): void {
+  const collectionsRow = db.prepare(`
+    SELECT COALESCE(SUM(amount_in), 0) AS total
+    FROM transactions t JOIN main_categories mc ON t.main_category_id=mc.id WHERE t.shift_id = ? AND mc.name = 'تحصيل'
+  `).get(shiftId) as { total: number }
+  const expensesRow = db.prepare(`
+    SELECT COALESCE(SUM(amount_out), 0) AS total
+    FROM transactions WHERE shift_id = ? AND pay_method != 'management'
+  `).get(shiftId) as { total: number }
+  db.prepare(`
+    UPDATE shifts SET pos_sales=?, cashier_remaining=?, cashier_collections=?, shift_expenses=? WHERE id=?
+  `).run(data.posSales, data.cashierRemaining, collectionsRow.total, expensesRow.total, shiftId)
+}
+
+// استيراد Excel — يثق برقم «مصروفات الكاشير» المُصالَح فعلياً في الشيت المرجعي (قروش)
+// بدل الاشتقاق من (pay_method != 'management') على البنود المستوردة، والذي قد ينتفخ إذا كان
+// عمود «الدفع» فارغاً لبنود مشتريات/مصروفات/أجور جُمعية لا تمثّل صرفاً فعلياً من درج الكاشير.
+export function overrideShiftExpenses(db: Database.Database, shiftId: number, shiftExpensesPias: number): void {
+  db.prepare(`UPDATE shifts SET shift_expenses=? WHERE id=?`).run(shiftExpensesPias, shiftId)
 }
 
 // ===== بيانات فوري =====
 export function getFawry(db: Database.Database, shiftId: number): ShiftFawry | null {
   const row = db.prepare(`SELECT * FROM shift_fawry WHERE shift_id=?`).get(shiftId) as Record<string, unknown> | undefined
   return row ? row2fawry(row) : null
+}
+
+// ADR-012 v2 — قيم فوري اللازمة لمعادلة الإغلاق لكل شيفتات شهر (لسجل اليوميات)
+export function getFawryClosingMonth(db: Database.Database, month: string): { shiftId: number; programSales: number; commissionPct: number }[] {
+  return (db.prepare(`
+    SELECT f.shift_id AS shiftId, f.program_sales AS programSales, f.commission_pct AS commissionPct
+    FROM shift_fawry f JOIN shifts s ON s.id = f.shift_id
+    WHERE s.date LIKE ?
+  `).all(`${month}%`) as { shiftId: number; programSales: number; commissionPct: number }[])
+}
+
+// ADR-012 v2 — قيم فوري لكل الشيفتات (للوحة المعلومات التراكمية)
+export function getAllFawryClosing(db: Database.Database): { shiftId: number; programSales: number; commissionPct: number }[] {
+  return (db.prepare(`
+    SELECT shift_id AS shiftId, program_sales AS programSales, commission_pct AS commissionPct FROM shift_fawry
+  `).all() as { shiftId: number; programSales: number; commissionPct: number }[])
 }
 
 export function updateFawry(
@@ -197,6 +255,19 @@ export function getCustody(db: Database.Database, shiftId: number): ShiftCustody
     addFromFund:    row.add_from_fund as number,
     managementPaid: row.management_paid as number,
   }
+}
+
+// دفعة عهدة لعدة شيفتات (للوحة المعلومات — تجميع فتري بلا استعلام لكل شيفت)
+export function getCustodyByShiftIds(db: Database.Database, shiftIds: number[]): ShiftCustody[] {
+  if (shiftIds.length === 0) return []
+  const placeholders = shiftIds.map(() => '?').join(',')
+  const rows = db.prepare(`SELECT * FROM shift_custody WHERE shift_id IN (${placeholders})`).all(...shiftIds) as Record<string, unknown>[]
+  return rows.map(row => ({
+    id:             row.id as number,
+    shiftId:        row.shift_id as number,
+    addFromFund:    row.add_from_fund as number,
+    managementPaid: row.management_paid as number,
+  }))
 }
 
 export function updateCustody(

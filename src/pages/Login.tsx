@@ -32,24 +32,20 @@ export default function Login() {
   const t   = loginText[lang]
   const dir = lang === 'ar' ? 'rtl' : 'ltr'
 
-  const [users,    setUsers]    = useState<User[]>([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [loading,  setLoading]  = useState(false)
   const [showPass, setShowPass] = useState(false)
-  const [focused,  setFocused]  = useState(false)
+  const [focusedField, setFocusedField] = useState<'user' | 'pass' | null>(null)
 
-  useEffect(() => {
-    load()
-    call(api.users.getAll()).then(list => setUsers((list as User[]).filter(u => u.active))).catch(() => {})
-  }, [])
+  useEffect(() => { load() }, [])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
     if (!username || !password) { show(t.warnFields, 'warning'); return }
     setLoading(true)
     try {
-      const user = await call(api.users.verify(username, password))
+      const user = await call<User | null>(api.users.verify(username, password))
       if (!user) { show(t.errLogin, 'error'); return }
       login(user)
     } catch (e) { show((e as Error).message, 'error') }
@@ -62,7 +58,6 @@ export default function Login() {
 
       {/* ===== شريط علوي: أزرار النافذة + التبديل ===== */}
       <div className="absolute top-0 inset-x-0 h-10 flex items-center justify-between px-3 z-50 titlebar-drag">
-        {/* أزرار النافذة (يسار) */}
         <div className="flex items-center gap-1 titlebar-no-drag">
           <button onClick={() => window.api.window.close()}
             className="w-8 h-8 flex items-center justify-center rounded-lg text-white/70 hover:bg-danger hover:text-white transition-colors">
@@ -77,7 +72,6 @@ export default function Login() {
             <Icons.Minimize size={13} />
           </button>
         </div>
-        {/* التبديل (يمين) */}
         <div className="flex items-center gap-2 titlebar-no-drag">
           <button onClick={toggleTheme} title={theme === 'dark' ? 'Light' : 'Dark'}
             className="w-8 h-8 rounded-lg flex items-center justify-center transition-colors"
@@ -92,132 +86,7 @@ export default function Login() {
         </div>
       </div>
 
-      {/* ===== اللوحة اليسرى (فاتحة) — الفورم ===== */}
-      <div className="flex-1 flex items-center justify-center p-8"
-        style={{ background: '#ffffff' }}>
-        <div className="w-full max-w-md fade-in">
-          {/* العنوان */}
-          <h1 style={{ fontSize: '28px', fontWeight: 700, lineHeight: '36px', color: '#1e1b4b' }}>
-            {t.title}
-          </h1>
-          <p className="mt-1.5" style={{ fontSize: '15px', fontWeight: 400, color: '#64748b' }}>
-            {t.subtitle}
-          </p>
-
-          {/* بطاقات الكاشير */}
-          {users.length > 0 && (
-            <div className="mt-7">
-              <div className="mb-3" style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8' }}>
-                {t.chooseAccount}
-              </div>
-              <div className="grid grid-cols-3 gap-2.5">
-                {users.map(u => {
-                  const sel = username === u.username
-                  return (
-                    <button key={u.id} type="button"
-                      onClick={() => setUsername(u.username)}
-                      className="flex flex-col items-center gap-2 py-3 px-2 rounded-xl transition-all duration-150"
-                      style={{
-                        background: sel ? `${NAVY}0a` : '#f8fafc',
-                        border: `2px solid ${sel ? NAVY : '#e2e8f0'}`,
-                      }}>
-                      <div className="w-9 h-9 rounded-full flex items-center justify-center font-bold flex-shrink-0"
-                        style={{ background: u.color, fontSize: '15px', color: '#fff' }}>
-                        {u.displayName[0]}
-                      </div>
-                      <span className="truncate w-full text-center"
-                        style={{ fontSize: '12px', fontWeight: 600, color: '#334155' }}>
-                        {u.displayName}
-                      </span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* فاصل */}
-          <div className="flex items-center gap-3 my-6">
-            <div className="flex-1 h-px" style={{ background: '#e2e8f0' }} />
-            <span style={{ fontSize: '12px', color: '#94a3b8' }}>{t.orDirect}</span>
-            <div className="flex-1 h-px" style={{ background: '#e2e8f0' }} />
-          </div>
-
-          <form onSubmit={handleSubmit} className="space-y-4">
-            {/* اسم المستخدم (يظهر عند عدم اختيار بطاقة أو دائماً) */}
-            <div>
-              <label className="block mb-2" style={{ fontSize: '14px', fontWeight: 600, color: '#334155' }}>
-                {t.username}
-              </label>
-              <input
-                className="w-full px-4 py-3 rounded-xl outline-none transition-all duration-200"
-                style={{
-                  fontSize: '15px', fontWeight: 500, color: '#1e1b4b',
-                  background: '#f8fafc', border: '1.5px solid #e2e8f0',
-                }}
-                placeholder={t.userPlaceholder}
-                value={username} onChange={e => setUsername(e.target.value)}
-                autoComplete="username"
-              />
-            </div>
-
-            {/* كلمة المرور */}
-            <div>
-              <label className="block mb-2" style={{ fontSize: '14px', fontWeight: 600, color: '#334155' }}>
-                {t.password}
-              </label>
-              <div className="relative">
-                <input
-                  className="w-full px-4 py-3 rounded-xl outline-none transition-all duration-200"
-                  style={{
-                    fontSize: '15px', fontWeight: 500, color: '#1e1b4b',
-                    paddingLeft: dir === 'rtl' ? '42px' : '16px',
-                    paddingRight: dir === 'rtl' ? '16px' : '42px',
-                    background: focused ? '#fff' : '#f8fafc',
-                    border: `1.5px solid ${focused ? NAVY : '#e2e8f0'}`,
-                    boxShadow: focused ? `0 0 0 4px ${NAVY}14` : 'none',
-                  }}
-                  type={showPass ? 'text' : 'password'} placeholder="••••••"
-                  value={password} onChange={e => setPassword(e.target.value)}
-                  onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
-                  autoComplete="current-password"
-                />
-                <button type="button"
-                  className="absolute top-1/2 -translate-y-1/2 transition-colors"
-                  style={{ [dir === 'rtl' ? 'left' : 'right']: '14px', color: '#94a3b8' }}
-                  onClick={() => setShowPass(v => !v)}>
-                  <Icons.Eye size={16} />
-                </button>
-              </div>
-            </div>
-
-            {/* زر الدخول */}
-            <button type="submit" disabled={loading}
-              className="w-full py-3.5 rounded-xl transition-all duration-200 mt-2 hover:brightness-125
-                disabled:opacity-60 disabled:cursor-not-allowed"
-              style={{
-                fontSize: '16px', fontWeight: 600, color: '#fff',
-                background: NAVY,
-                boxShadow: `0 6px 20px ${NAVY}44`,
-              }}>
-              {loading ? (
-                <div className="flex items-center justify-center gap-2">
-                  <span className="w-4 h-4 border-2 rounded-full animate-spin"
-                    style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white' }} />
-                  <span>{t.verifying}</span>
-                </div>
-              ) : (
-                <div className="flex items-center justify-center gap-2">
-                  <span>{t.login}</span>
-                  <Icons.ArrowRight size={16} className={dir === 'rtl' ? 'rotate-180' : ''} />
-                </div>
-              )}
-            </button>
-          </form>
-        </div>
-      </div>
-
-      {/* ===== اللوحة اليمنى (كحلية) — المعلومات ===== */}
+      {/* ===== اللوحة اليمنى (كحلية) — المعلومات — أولاً في الـ DOM لتظهر على اليمين في RTL ===== */}
       <div className="hidden lg:flex lg:w-[420px] flex-col p-9 relative overflow-hidden"
         style={{ background: `linear-gradient(150deg, #1e1b4b 0%, #312e81 55%, #1e1b4b 100%)` }}>
 
@@ -319,6 +188,23 @@ export default function Login() {
             </div>
           )}
 
+          {/* نظام نقاط البيع — قريباً */}
+          <div className="rounded-2xl p-4 mt-3 flex items-center gap-3" style={{ background: 'rgba(96,165,250,0.10)', border: '1px solid rgba(96,165,250,0.25)' }}>
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(96,165,250,0.18)', color: '#60a5fa' }}>
+              <Icons.Retail size={17} />
+            </div>
+            <div>
+              <div style={{ fontSize: '14px', fontWeight: 700, color: '#93c5fd' }}>نظام نقاط البيع — قريبًا</div>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span className="relative flex w-1.5 h-1.5">
+                  <span className="absolute inline-flex h-full w-full rounded-full opacity-75 animate-ping" style={{ background: '#60a5fa' }} />
+                  <span className="relative inline-flex rounded-full w-1.5 h-1.5" style={{ background: '#60a5fa' }} />
+                </span>
+                <span style={{ fontSize: '12px', fontWeight: 500, color: '#cbd5e1' }}>جاري التطوير</span>
+              </div>
+            </div>
+          </div>
+
           <div className="flex-1" />
 
           {/* التذييل */}
@@ -328,6 +214,104 @@ export default function Login() {
             </div>
             <div className="mt-0.5" style={{ fontSize: '11px', fontWeight: 400, color: '#94a3b8' }}>© 2026 · All rights reserved</div>
           </div>
+        </div>
+      </div>
+
+      {/* ===== اللوحة اليسرى (فاتحة) — الفورم — ثانياً في الـ DOM لتظهر على اليسار في RTL ===== */}
+      <div className="flex-1 flex items-center justify-center p-8"
+        style={{ background: '#ffffff' }}>
+        <div className="w-full max-w-md fade-in">
+          {/* العنوان */}
+          <h1 style={{ fontSize: '28px', fontWeight: 700, lineHeight: '36px', color: '#1e1b4b' }}>
+            {t.title}
+          </h1>
+          <p className="mt-1.5" style={{ fontSize: '15px', fontWeight: 400, color: '#64748b' }}>
+            {t.subtitle}
+          </p>
+
+          <form onSubmit={handleSubmit} className="space-y-4 mt-8 slide-up">
+            <div>
+              <label className="block mb-2" style={{ fontSize: '14px', fontWeight: 600, color: '#334155' }}>
+                {t.username}
+              </label>
+              <div className="relative">
+                <span className="absolute top-1/2 -translate-y-1/2 transition-colors pointer-events-none"
+                  style={{ [dir === 'rtl' ? 'right' : 'left']: '14px', color: focusedField === 'user' ? NAVY : '#94a3b8' }}>
+                  <Icons.User size={16} />
+                </span>
+                <input
+                  className="w-full py-3 rounded-xl outline-none transition-all duration-200"
+                  style={{
+                    fontSize: '15px', fontWeight: 500, color: '#1e1b4b',
+                    paddingRight: dir === 'rtl' ? '42px' : '16px',
+                    paddingLeft: dir === 'rtl' ? '16px' : '42px',
+                    background: focusedField === 'user' ? '#fff' : '#f8fafc',
+                    border: `1.5px solid ${focusedField === 'user' ? NAVY : '#e2e8f0'}`,
+                    boxShadow: focusedField === 'user' ? `0 0 0 4px ${NAVY}14` : 'none',
+                  }}
+                  placeholder={t.userPlaceholder}
+                  value={username} onChange={e => setUsername(e.target.value)}
+                  onFocus={() => setFocusedField('user')} onBlur={() => setFocusedField(null)}
+                  autoComplete="username"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block mb-2" style={{ fontSize: '14px', fontWeight: 600, color: '#334155' }}>
+                {t.password}
+              </label>
+              <div className="relative">
+                <span className="absolute top-1/2 -translate-y-1/2 transition-colors pointer-events-none"
+                  style={{ [dir === 'rtl' ? 'right' : 'left']: '14px', color: focusedField === 'pass' ? NAVY : '#94a3b8' }}>
+                  <Icons.Lock size={16} />
+                </span>
+                <input
+                  className="w-full py-3 rounded-xl outline-none transition-all duration-200"
+                  style={{
+                    fontSize: '15px', fontWeight: 500, color: '#1e1b4b',
+                    paddingRight: dir === 'rtl' ? '42px' : '42px',
+                    paddingLeft: dir === 'rtl' ? '42px' : '42px',
+                    background: focusedField === 'pass' ? '#fff' : '#f8fafc',
+                    border: `1.5px solid ${focusedField === 'pass' ? NAVY : '#e2e8f0'}`,
+                    boxShadow: focusedField === 'pass' ? `0 0 0 4px ${NAVY}14` : 'none',
+                  }}
+                  type={showPass ? 'text' : 'password'} placeholder="••••••"
+                  value={password} onChange={e => setPassword(e.target.value)}
+                  onFocus={() => setFocusedField('pass')} onBlur={() => setFocusedField(null)}
+                  autoComplete="current-password"
+                />
+                <button type="button"
+                  className="absolute top-1/2 -translate-y-1/2 transition-colors hover:opacity-70"
+                  style={{ [dir === 'rtl' ? 'left' : 'right']: '14px', color: '#94a3b8' }}
+                  onClick={() => setShowPass(v => !v)}>
+                  <Icons.Eye size={16} />
+                </button>
+              </div>
+            </div>
+
+            <button type="submit" disabled={loading}
+              className="w-full py-3.5 rounded-xl transition-all duration-200 mt-2 hover:brightness-125 hover:-translate-y-0.5 active:translate-y-0
+                disabled:opacity-60 disabled:cursor-not-allowed disabled:translate-y-0"
+              style={{
+                fontSize: '16px', fontWeight: 600, color: '#fff',
+                background: NAVY,
+                boxShadow: `0 6px 20px ${NAVY}44`,
+              }}>
+              {loading ? (
+                <div className="flex items-center justify-center gap-2">
+                  <span className="w-4 h-4 border-2 rounded-full animate-spin"
+                    style={{ borderColor: 'rgba(255,255,255,0.3)', borderTopColor: 'white' }} />
+                  <span>{t.verifying}</span>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center gap-2">
+                  <span>{t.login}</span>
+                  <Icons.ArrowRight size={16} className={dir === 'rtl' ? 'rotate-180' : ''} />
+                </div>
+              )}
+            </button>
+          </form>
         </div>
       </div>
     </div>

@@ -3,7 +3,9 @@
 // ═══════════════════════════════════════════════════════════
 import { api, call } from './api'
 import { fmt, fmtDate, shiftTypeLabel } from './format'
+import { calcShiftClosing } from '../../core/engine'
 import type { Shift, Transaction, ShiftFawry, ShiftCustody } from '../../core/types'
+import { APP_VERSION } from '../version'
 
 const PAY_LABELS: Record<string, string> = {
   cashier: 'كاشير', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا',
@@ -26,9 +28,11 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
   const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((sm, t) => sm + t.amountIn, 0)
   const mgmtOut = txs.filter(t => t.payMethod === 'management').reduce((sm, t) => sm + t.amountOut, 0)
   const shiftExpenses = totalOut - mgmtOut
-  const result = shiftExpenses + (s.cashierRemaining ?? 0) - (s.posSales ?? 0) - collections
-  const resultColor = result > 0 ? '#10b981' : result < 0 ? '#ef4444' : '#f59e0b'
-  const resultLabel = result > 0 ? 'أوفر' : result < 0 ? 'عجز' : 'متزن'
+  // ADR-012 v2 — المعادلة الرسمية: (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
+  const cashierExpenses = txs.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((sm, t) => sm + t.amountIn + t.amountOut, 0)
+  const { result, status } = calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
+  const resultColor = status === 'surplus' ? '#10b981' : status === 'deficit' ? '#ef4444' : '#f59e0b'
+  const resultLabel = status === 'surplus' ? 'أوفر' : status === 'deficit' ? 'عجز' : 'مطابق'
 
   // حركة الصندوق (4 خلايا): رصيد أول + مضاف − منصرف = متبقي
   const boxOpening   = s.openingBalance ?? 0
@@ -37,7 +41,7 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
   const boxRemaining = boxOpening + boxAdded - boxSpent
   const boxRemColor  = boxRemaining >= 0 ? '#10b981' : '#ef4444'
 
-  const payDist = ['cashier', 'management', 'credit', 'visa'].map(pm => {
+  const payDist = (['cashier', 'management'] as const).map(pm => {
     const list = txs.filter(t => t.payMethod === pm)
     return {
       method: PAY_LABELS[pm], count: list.length,
@@ -66,7 +70,7 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
                  font-size: 22px; font-weight: 900; color: white; box-shadow: 0 4px 14px rgba(59,130,246,0.5);">AJ</div>`}
           <div>
             <div style="font-size: 22px; font-weight: 900; margin-bottom: 4px;">${companyName || 'AJ Smart Shift Hyper'}</div>
-            <div style="font-size: 12px; opacity: 0.85;">تقرير يومية الشيفت — v2.31.2</div>
+            <div style="font-size: 12px; opacity: 0.85;">تقرير يومية الشيفت — v${APP_VERSION}</div>
           </div>
         </div>
         <div style="text-align: left; font-size: 11px; opacity: 0.85;">
@@ -274,6 +278,7 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
         </div>
         <div style="text-align: left;">
           <div style="margin-bottom: 4px;">AJ Smart Shift Hyper v2.31.2</div>
+          <div style="margin-bottom: 4px;">AJ Smart Shift Hyper v${APP_VERSION}</div>
           <div>تطوير: <b>أحمد جلال #1637</b></div>
         </div>
       </div>

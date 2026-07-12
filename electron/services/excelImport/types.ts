@@ -1,0 +1,73 @@
+/**
+ * أنواع محرّك استيراد Excel (مشتركة بين المكوّنات).
+ * البنية: Workbook → Worksheet → ShiftBlock → Transactions
+ */
+import type { ShiftType, PayMethod } from '../../../core/types'
+
+/** معاملة خام كما قُرئت من الإكسل (قبل التحقّق والتعيين النهائي). */
+export interface RawTransaction {
+  rowNum: number            // رقم الصف في الورقة (للتقارير والأخطاء)
+  amount: number            // القيمة (قروش×؟ — تبقى كما في الإكسل حتى التحويل)
+  description: string        // البيان (خام)
+  categoryRaw: string        // الفئة كما في الإكسل
+  categoryNorm: string       // الفئة بعد التطبيع (مفتاح التعيين)
+  payRaw: string             // الدفع كما في الإكسل
+  payNorm: string            // الدفع بعد التطبيع
+}
+
+/** بيانات ماكينة فوري الخام (العمودان E/F داخل الكتلة) — بالجنيه كما في الإكسل. */
+export interface RawFawry {
+  basicReceive?: number; basicDeliver?: number
+  airReceive?: number; airDeliver?: number
+  cashoutReceive?: number; cashoutDeliver?: number
+  cashoutAdd?: number; cashoutDiscount?: number
+  fawryToBasic?: number; fawryToAir?: number
+  cashoutToBasic?: number; cashoutToAir?: number
+  programSales?: number                 // «مبيعات البرنامج»
+  firstVoucher?: number; lastVoucher?: number   // أرقام بون (ليست مبالغ)
+  importedFawrySales?: number           // «مبيعات فوري» المقروءة — للتحقّق فقط (تُحسب من المحرّك)
+}
+
+/** بيانات التقفيل الخام (العمودان G/H داخل الكتلة) — بالجنيه كما في الإكسل. */
+export interface RawClosing {
+  posSales?: number          // «إجمالي مبيعات» → مبيعات POS
+  cashierRemaining?: number  // «نقدية» → نقدية الكاشير
+  cashierExpenses?: number   // «كاشير» → مصروفات الكاشير (للتحقّق مع المحسوبة من البنود)
+}
+
+/** كتلة شيفت واحدة = ترويسة + معاملاتها + فوري + تقفيل. */
+export interface RawShiftBlock {
+  sheetName: string
+  headerRow: number
+  dateISO: string | null     // yyyy-mm-dd
+  dateRaw: unknown           // القيمة الأصلية (Date أو نص)
+  dayName: string
+  shiftRaw: string           // صباحي/مسائي…
+  shiftType: ShiftType | null
+  cashierRaw: string         // اسم الكاشير كما في الإكسل
+  cashierNorm: string
+  transactions: RawTransaction[]
+  fawry: RawFawry            // العمودان E/F
+  closing: RawClosing        // العمودان G/H
+}
+
+/** ناتج تحليل المصنّف بالكامل. */
+export interface ParseResult {
+  blocks: RawShiftBlock[]
+  totalTransactions: number
+  sheetsScanned: number
+  warnings: string[]         // مشاكل غير قاتلة (كاشير فارغ، نوع شيفت مجهول…)
+}
+
+/** تعيين اتجاه المعاملة يُشتقّ من «نوع الفئة» لا من قاعدة التعيين (decision #5). */
+export type CategoryKind = 'income' | 'expense' | 'purchase' | 'collection' | 'return' | 'misc'
+
+/** اتجاه المبلغ في جدول transactions. */
+export type Direction = 'in' | 'out'
+
+/** واجهة عامة لأي محلّل قالب (يسمح بإضافة محلّلات مستقبلية — decision #1). */
+export interface WorkbookParser {
+  readonly id: string
+  readonly label: string
+  parse(workbook: import('exceljs').Workbook): ParseResult
+}

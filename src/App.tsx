@@ -9,6 +9,7 @@ import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
 import Daily from './pages/Daily'
 import Reports from './pages/Reports'
+import ImportExcel from './pages/ImportExcel'
 import Employees from './pages/Employees'
 import Settings from './pages/Settings'
 import Users from './pages/Users'
@@ -27,7 +28,7 @@ type Page =
   | 'dashboard' | 'daily'    | 'reports'  | 'employees'
   | 'settings'  | 'users'    | 'treasury'
   | 'fawry'     | 'categories' | 'about'
-  | 'customers' | 'suppliers'
+  | 'customers' | 'suppliers' | 'importExcel'
 
 export default function App() {
   const { user }                          = useAuth()
@@ -38,6 +39,13 @@ export default function App() {
   const [page, setPage] = useState<Page>('dashboard')
 
   useEffect(() => { loadLicense() }, [])
+
+  // ADR-012 v2 — تنقّل من مكوّنات عميقة (زر «إغلاق الصفحة» في الورقة الموحّدة)
+  useEffect(() => {
+    const h = (e: Event) => setPage((e as CustomEvent).detail as Page)
+    window.addEventListener('app:navigate', h)
+    return () => window.removeEventListener('app:navigate', h)
+  }, [])
 
   useEffect(() => {
     if (user) { loadActiveShift(); loadCategories(); loadPageAccess(user.id) }
@@ -73,6 +81,7 @@ export default function App() {
     about:         <About />,
     customers:     <Parties type="customer" />,
     suppliers:     <Parties type="supplier" />,
+    importExcel:   <ImportExcel />,
   }
 
   return (

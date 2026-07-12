@@ -1,330 +1,562 @@
 import { useState, useEffect, useMemo } from 'react'
 import { api, call } from '../lib/api'
 import Icons from '../components/Icon'
+import { MiniCombo } from '../components/MiniChart'
 import { fmt, fmtDate, shiftTypeLabel } from '../lib/format'
-import type { Shift, Transaction } from '../../core/types'
+import { calcFawryWithCommission, calcShiftClosing } from '../../core/engine'
+import type { Shift, Transaction, ShiftCustody, Setting } from '../../core/types'
 
 // ═══════════════════════════════════════════════════════════
-// v2.27.0 (15-Jun) — لوحة التحكم التراكمية
-// البيانات تُعرض تراكمياً دائماً (كل الشيفتات) مع فلتر اختياري
-// (الكل / سنة / شهر / يوم محدد)
+// لوحة المعلومات — تخطيط ERP بثلاثة أعمدة ثابتة (يسار 25% / وسط 50% / يمين 25%)
+// كل الحسابات والمنطق البرمجي كما هي بلا أي تغيير — إعادة توزيع بصري فقط.
+// حالة الشيفت من المعادلة الرسمية الموحّدة (core/engine).
 // ═══════════════════════════════════════════════════════════
-
-const PAY_LABELS: Record<string, string> = {
-  cashier: 'كاش', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا',
-}
-const PAY_COLORS: Record<string, string> = {
-  cashier: '#3b82f6', management: '#f59e0b', credit: '#8b5cf6', visa: '#10b981',
-}
 
 type FilterMode = 'all' | 'year' | 'month' | 'day'
-
-function CardTitle({ icon, title, color = '#3b82f6' }: { icon: React.ReactNode; title: string; color?: string }) {
-  return (
-    <div className="flex items-center gap-2 mb-3 pb-2" style={{ borderBottom: '1px solid var(--inner-border)' }}>
-      <span style={{ color }}>{icon}</span>
-      <span style={{ fontSize: 14, fontWeight: 700, color: 'var(--txt-1)' }}>{title}</span>
-    </div>
-  )
-}
-
-function shiftResultOf(s: Shift): { result: number; kind: 'surplus' | 'deficit' | 'balanced' } {
-  const result = (s.shiftExpenses ?? 0) + (s.cashierRemaining ?? 0) - (s.posSales ?? 0) - (s.cashierCollections ?? 0)
-  const kind = result > 0 ? 'surplus' : result < 0 ? 'deficit' : 'balanced'
-  return { result, kind: kind as 'surplus' | 'deficit' | 'balanced' }
-}
+type FawryClose = { programSales: number; commissionPct: number }
+const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
 
 export default function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }) {
   const [allShifts, setAllShifts] = useState<Shift[]>([])
-  const [allTxs,    setAllTxs]    = useState<Transaction[]>([])
-  const [loading,   setLoading]   = useState(true)
+  const [allTxs, setAllTxs] = useState<Transaction[]>([])
+  const [fawryMap, setFawryMap] = useState<Record<number, FawryClose>>({})
+  const [custodyMap, setCustodyMap] = useState<Record<number, ShiftCustody>>({})
+  const [settingsMap, setSettingsMap] = useState<Record<string, string>>({})
+  const [partyCounts, setPartyCounts] = useState({ customers: 0, suppliers: 0 })
+  const [loading, setLoading] = useState(true)
   const [activeShift, setActiveShift] = useState<Shift | null>(null)
 
-  // الفلتر
   const now = new Date()
-  const [filterMode, setFilterMode] = useState<FilterMode>('all')
-  const [filterYear,  setFilterYear]  = useState(now.getFullYear())
+  const [filterMode, setFilterMode] = useState<FilterMode>('month')
+  const [filterYear, setFilterYear] = useState(now.getFullYear())
   const [filterMonth, setFilterMonth] = useState(now.getMonth() + 1)
-  const [filterDay,   setFilterDay]   = useState(now.toISOString().slice(0, 10))
+  const [filterDay, setFilterDay] = useState(now.toISOString().slice(0, 10))
 
   async function loadAll() {
     setLoading(true)
     try {
       const shifts = await call(api.shifts.getAll({})) as Shift[]
       setAllShifts(shifts)
-      const active = await call(api.shifts.getActive()).catch(() => null) as Shift | null
-      setActiveShift(active)
-      // جلب كل البنود
-      const txArrays = await Promise.all(shifts.map(s => call(api.tx.getByShift(s.id)).catch(() => [])))
-      setAllTxs((txArrays.flat() as Transaction[]))
+      setActiveShift(await call(api.shifts.getActive()).catch(() => null) as Shift | null)
+      const ids = shifts.map(s => s.id)
+      const [allTxs, fawryRows, custodyRows, settingsRows, customers, suppliers] = await Promise.all([
+        call(api.tx.getByShiftIds(ids)).catch(() => []),
+        call<{ shiftId: number; programSales: number; commissionPct: number }[]>(api.fawry.allClosing()).catch(() => []),
+        call<ShiftCustody[]>(api.custody.getByShiftIds(ids)).catch(() => []),
+        call<Setting[]>(api.settings.getAll()).catch(() => []),
+        call<unknown[]>(api.party.list('customer')).catch(() => []),
+        call<unknown[]>(api.party.list('supplier')).catch(() => []),
+      ])
+      setAllTxs(allTxs as Transaction[])
+      const fm: Record<number, FawryClose> = {}
+      for (const r of fawryRows) fm[r.shiftId] = { programSales: r.programSales, commissionPct: r.commissionPct }
+      setFawryMap(fm)
+      const cm: Record<number, ShiftCustody> = {}
+      for (const c of custodyRows) cm[c.shiftId] = c
+      setCustodyMap(cm)
+      const sm: Record<string, string> = {}
+      for (const row of settingsRows) sm[row.key] = row.value
+      setSettingsMap(sm)
+      setPartyCounts({ customers: customers.length, suppliers: suppliers.length })
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
   }
   useEffect(() => { loadAll() }, [])
 
-  // ── تطبيق الفلتر على الشيفتات والبنود ──
-  const matchDate = (date: string): boolean => {
+  // ── تطابق فترة (الحالية والسابقة) ──
+  const monthKey = `${filterYear}-${String(filterMonth).padStart(2, '0')}`
+  const prevMonthKey = (() => { const d = new Date(filterYear, filterMonth - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` })()
+  const prevDay = (() => { const d = new Date(filterDay); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10) })()
+  function inCur(date: string) {
     if (filterMode === 'all') return true
-    if (filterMode === 'year')  return date.slice(0, 4) === String(filterYear)
-    if (filterMode === 'month') return date.slice(0, 7) === `${filterYear}-${String(filterMonth).padStart(2, '0')}`
-    if (filterMode === 'day')   return date.slice(0, 10) === filterDay
-    return true
+    if (filterMode === 'year') return date.slice(0, 4) === String(filterYear)
+    if (filterMode === 'month') return date.slice(0, 7) === monthKey
+    return date.slice(0, 10) === filterDay
   }
-  const shiftIdsInRange = useMemo(() =>
-    new Set(allShifts.filter(s => matchDate(s.date)).map(s => s.id)),
-    [allShifts, filterMode, filterYear, filterMonth, filterDay]
-  )
-  const shifts = useMemo(() => allShifts.filter(s => shiftIdsInRange.has(s.id)), [allShifts, shiftIdsInRange])
-  const txs    = useMemo(() => allTxs.filter(t => shiftIdsInRange.has(t.shiftId)), [allTxs, shiftIdsInRange])
+  function inPrev(date: string) {
+    if (filterMode === 'year') return date.slice(0, 4) === String(filterYear - 1)
+    if (filterMode === 'month') return date.slice(0, 7) === prevMonthKey
+    if (filterMode === 'day') return date.slice(0, 10) === prevDay
+    return false // الكل: لا مقارنة
+  }
 
-  // ── المؤشرات التراكمية ──
-  const m = useMemo(() => {
-    const totalIn  = txs.reduce((s, t) => s + t.amountIn,  0)
-    const totalOut = txs.reduce((s, t) => s + t.amountOut, 0)
-    const cashIn   = txs.filter(t => t.payMethod === 'cashier').reduce((s, t) => s + t.amountIn, 0)
-    const visaIn   = txs.filter(t => t.payMethod === 'visa').reduce((s, t) => s + t.amountIn, 0)
-    const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((s, t) => s + t.amountIn, 0)
-    const posSales = shifts.reduce((s, sh) => s + (sh.posSales ?? 0), 0)
-    const cashierRemain = shifts.reduce((s, sh) => s + (sh.cashierRemaining ?? 0), 0)
-    const mgmtOut  = txs.filter(t => t.payMethod === 'management').reduce((s, t) => s + t.amountOut, 0)
+  const fawryWith = (s: Shift) => { const f = fawryMap[s.id]; return f ? calcFawryWithCommission(f.programSales, f.commissionPct) : 0 }
 
-    let surplus = 0, deficit = 0, balanced = 0, netResult = 0
-    shifts.forEach(sh => {
-      const { result, kind } = shiftResultOf(sh)
-      netResult += result
-      if (kind === 'surplus') surplus++
-      else if (kind === 'deficit') deficit++
-      else balanced++
+  const txByShift = useMemo(() => {
+    const m: Record<number, Transaction[]> = {}
+    for (const t of allTxs) (m[t.shiftId] ||= []).push(t)
+    return m
+  }, [allTxs])
+
+  // نتيجة شيفت — المعادلة الرسمية الموحّدة
+  function resultOf(s: Shift) {
+    const tx = txByShift[s.id] ?? []
+    const collections = tx.filter(t => t.mainCategoryName === 'تحصيل').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+    const cashierExpenses = tx.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+    return calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
+  }
+  const saleOf = (s: Shift) => (s.posSales ?? 0) + fawryWith(s)
+
+  // ── تجميع الفترة الحالية ──
+  const M = useMemo(() => {
+    const cur = allShifts.filter(s => inCur(s.date))
+    const curIds = new Set(cur.map(s => s.id))
+    const tx = allTxs.filter(t => curIds.has(t.shiftId))
+    const outByMain = (name: string) => tx.filter(t => t.mainCategoryName === name).reduce((a, t) => a + t.amountOut, 0)
+    const outByMainSub = (main: string, sub: string) => tx.filter(t => t.mainCategoryName === main && t.subCategoryName === sub).reduce((a, t) => a + t.amountOut, 0)
+    const inBySub = (name: string) => tx.filter(t => t.subCategoryName === name).reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+    const countBySub = (name: string) => tx.filter(t => t.subCategoryName === name).length
+
+    const posOnly = cur.reduce((a, s) => a + (s.posSales ?? 0), 0)
+    const fawryOnly = cur.reduce((a, s) => a + fawryWith(s), 0)
+    const sales = posOnly + fawryOnly
+    const prevSales = allShifts.filter(s => inPrev(s.date)).reduce((a, s) => a + saleOf(s), 0)
+    const purchases = outByMain('مشتريات')
+    const meatPurchases = outByMainSub('مشتريات', 'مشتريات اللحوم')
+    const expenses = outByMain('مصروفات')
+    const wages = outByMain('أجور')
+    const collections = tx.filter(t => t.mainCategoryName === 'تحصيل').reduce((a, t) => a + t.amountIn, 0)
+    const visa = inBySub('مبيعات فيزا')
+    const credit = inBySub('مبيعات آجل')
+    const delivery = inBySub('مبيعات توصيل')
+    const deliveryCount = countBySub('مبيعات توصيل')
+    const cashierCash = cur.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
+
+    let surplus = 0, deficit = 0, balanced = 0, net = 0
+    let best: { s: Shift; sale: number } | null = null
+    let worst: { s: Shift; sale: number } | null = null
+    for (const s of cur) {
+      const { result, status } = resultOf(s); net += result
+      if (status === 'surplus') surplus++; else if (status === 'deficit') deficit++; else balanced++
+      const sale = saleOf(s)
+      if (!best || sale > best.sale) best = { s, sale }
+      if (!worst || sale < worst.sale) worst = { s, sale }
+    }
+
+    const payDist = (['cashier', 'management'] as const).map(pm => {
+      const list = tx.filter(t => t.payMethod === pm)
+      return { method: pm, val: list.reduce((a, t) => a + t.amountIn + t.amountOut, 0), count: list.length }
     })
 
-    // توزيع طرق الدفع
-    const payDist = (['cashier', 'management', 'credit', 'visa'] as const).map(pm => {
-      const list = txs.filter(t => t.payMethod === pm)
-      return { method: pm, in: list.reduce((s, t) => s + t.amountIn, 0), out: list.reduce((s, t) => s + t.amountOut, 0), count: list.length }
-    })
+    // حساب العهدة (تجميع الفترة)
+    const custodyAdd  = cur.reduce((a, s) => a + (custodyMap[s.id]?.addFromFund ?? 0), 0)
+    const custodyPaid = cur.reduce((a, s) => a + (custodyMap[s.id]?.managementPaid ?? 0), 0)
+
+    // حساب الصندوق (تجميع الفترة) — رصيد أول أقدم شيفت بالفترة + الوارد (نقدية الكاشير) − المصروفات (مدفوعات الإدارة)
+    const sortedCur = [...cur].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime))
+    const firstShift = sortedCur[0]
+    const fundOpening = firstShift ? Number(settingsMap[`fund.prev.${firstShift.id}`] ?? 0) * 100 : 0
+    const fundIn  = cashierCash
+    const fundOut = custodyPaid
+    const fundClosing = fundOpening + fundIn - fundOut
+
+    // حساب الكاشير (تجميع الفترة)
+    const cashierPayVal = payDist.find(d => d.method === 'cashier')?.val ?? 0
+    const cashierNet = cashierPayVal - custodyPaid
+
+    // حسابات المشتريات (فواتير)
+    const purchaseTx = tx.filter(t => t.mainCategoryName === 'مشتريات')
+    const purchaseInvoiceCount = purchaseTx.length
+    const avgInvoice = purchaseInvoiceCount ? purchases / purchaseInvoiceCount : 0
+    const maxInvoice = purchaseTx.reduce((mx, t) => Math.max(mx, t.amountOut), 0)
+
+    // مؤشرات مباشرة (ربحية)
+    const totalRevenue = sales
+    const totalExpensesAll = purchases + expenses + wages
+    const netProfit = totalRevenue - totalExpensesAll
+    const profitMarginPct = totalRevenue > 0 ? (netProfit / totalRevenue) * 100 : 0
+
+    // مؤشرات إضافية
+    const avgTxValue = tx.length ? tx.reduce((a, t) => a + t.amountIn + t.amountOut, 0) / tx.length : 0
+    const avgCashPerShift = cur.length ? cashierCash / cur.length : 0
 
     return {
-      totalIn, totalOut, net: totalIn - totalOut, cashIn, visaIn, collections,
-      posSales, cashierRemain, mgmtOut, netResult,
-      shiftsCount: shifts.length, itemsCount: txs.length,
-      surplus, deficit, balanced, payDist,
-      profit: posSales - mgmtOut,  // تقريبي
+      cur, sales, posOnly, fawryOnly, prevSales, purchases, meatPurchases, expenses, wages,
+      collections, visa, credit, delivery, deliveryCount, cashierCash,
+      surplus, deficit, balanced, net, best, worst, payDist, itemsCount: tx.length,
+      custodyAdd, custodyPaid, fundOpening, fundIn, fundOut, fundClosing, cashierPayVal, cashierNet,
+      purchaseInvoiceCount, avgInvoice, maxInvoice,
+      totalRevenue, totalExpensesAll, netProfit, profitMarginPct,
+      avgTxValue, avgCashPerShift,
     }
-  }, [txs, shifts])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allShifts, allTxs, fawryMap, custodyMap, settingsMap, filterMode, filterYear, filterMonth, filterDay, txByShift])
 
-  const periodLabel = filterMode === 'all' ? 'كل الفترات'
-    : filterMode === 'year' ? `سنة ${filterYear}`
-    : filterMode === 'month' ? `${filterMonth}/${filterYear}`
-    : `يوم ${fmtDate(filterDay)}`
+  const periodLabel = filterMode === 'all' ? 'كل الفترات' : filterMode === 'year' ? `سنة ${filterYear}` : filterMode === 'month' ? `${filterMonth}/${filterYear}` : `يوم ${fmtDate(filterDay)}`
+  const salesDelta = M.sales - M.prevSales
+  const growthPct = M.prevSales !== 0 ? (salesDelta / Math.abs(M.prevSales)) * 100 : (M.sales > 0 ? 100 : 0)
 
-  const years: number[] = []
-  for (let y = now.getFullYear() + 1; y >= 2024; y--) years.push(y)
-  const MONTHS = ['يناير','فبراير','مارس','أبريل','مايو','يونيو','يوليو','أغسطس','سبتمبر','أكتوبر','نوفمبر','ديسمبر']
+  const years: number[] = []; for (let y = now.getFullYear() + 1; y >= 2024; y--) years.push(y)
+
+  // ═══ جدول اتجاه 12 شهر — يناير ← ديسمبر لسنة الفلتر أعلى الصفحة (بلا تكرار السنة في كل صف) ═══
+  const twelveMonths = useMemo(() => {
+    const months: { key: string; label: string }[] = []
+    for (let mo = 1; mo <= 12; mo++) {
+      months.push({ key: `${filterYear}-${String(mo).padStart(2, '0')}`, label: MONTHS[mo - 1] })
+    }
+    return months.map(m => {
+      const shiftsInMonth = allShifts.filter(s => s.date.slice(0, 7) === m.key)
+      const ids = new Set(shiftsInMonth.map(s => s.id))
+      const tx = allTxs.filter(t => ids.has(t.shiftId))
+      const salesVal = shiftsInMonth.reduce((a, s) => a + saleOf(s), 0)
+      const purchasesVal = tx.filter(t => t.mainCategoryName === 'مشتريات').reduce((a, t) => a + t.amountOut, 0)
+      const expensesVal = tx.filter(t => t.mainCategoryName === 'مصروفات').reduce((a, t) => a + t.amountOut, 0)
+      let cashVal = 0
+      for (const s of shiftsInMonth) cashVal += resultOf(s).result
+      const invKey = `inventory.${m.key}`
+      const inventoryVal = settingsMap[invKey] ? Number(settingsMap[invKey]) : 0
+      const profitVal = salesVal - purchasesVal - expensesVal
+      const marginVal = salesVal > 0 ? (profitVal / salesVal) * 100 : 0
+      return { ...m, sales: salesVal, purchases: purchasesVal, cash: cashVal, inventory: inventoryVal, expenses: expensesVal, profit: profitVal, margin: marginVal, txCount: tx.length, shiftsCount: shiftsInMonth.length }
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allShifts, allTxs, fawryMap, settingsMap, filterYear])
+
+  // مؤشرات عامة — مبنية على نفس نافذة الـ12 شهر (لا فلتر الصفحة أعلاه)
+  const generalStats = useMemo(() => {
+    const withData = twelveMonths.filter(m => m.shiftsCount > 0)
+    const avgMonthlySales = withData.length ? withData.reduce((a, m) => a + m.sales, 0) / withData.length : 0
+    const avgMonthlyProfit = withData.length ? withData.reduce((a, m) => a + m.profit, 0) / withData.length : 0
+    const itemsInWindow = twelveMonths.reduce((a, m) => a + m.txCount, 0)
+    const windowKeys = new Set(twelveMonths.map(m => m.key))
+    const shiftsInWindow = allShifts.filter(s => windowKeys.has(s.date.slice(0, 7)))
+    let best: { s: Shift; sale: number } | null = null
+    let worst: { s: Shift; sale: number } | null = null
+    for (const s of shiftsInWindow) {
+      const sale = saleOf(s)
+      if (!best || sale > best.sale) best = { s, sale }
+      if (!worst || sale < worst.sale) worst = { s, sale }
+    }
+    let bestMonth = withData[0] ?? null
+    let worstMonth = withData[0] ?? null
+    for (const m of withData) {
+      if (!bestMonth || m.sales > bestMonth.sales) bestMonth = m
+      if (!worstMonth || m.sales < worstMonth.sales) worstMonth = m
+    }
+    return { avgMonthlySales, avgMonthlyProfit, itemsInWindow, shiftsCount: shiftsInWindow.length, best, worst, bestMonth, worstMonth }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [twelveMonths, allShifts, fawryMap])
+
+  async function saveInventory(mKey: string, egp: string) {
+    const val = Math.round((parseFloat(egp) || 0) * 100)
+    try {
+      await call(api.settings.set(`inventory.${mKey}`, String(val)))
+      setSettingsMap(sm => ({ ...sm, [`inventory.${mKey}`]: String(val) }))
+    } catch (e) { console.error(e) }
+  }
+
+  const chartData = twelveMonths.map(m => ({ label: m.label.split(' ')[0].slice(0, 3), in: m.sales, out: m.purchases + m.expenses, net: m.profit }))
 
   return (
-    <div className="flex-1 overflow-y-auto p-4 space-y-4">
+    <div className="flex-1 overflow-y-auto p-2 space-y-2">
 
-      {/* ═══ الرأس + شريط الفلتر ═══ */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}>
-            <Icons.Dashboard size={20} />
+      {/* ═══ الرأس + الفلتر ═══ */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}>
+            <Icons.Dashboard size={16} />
           </div>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--txt-1)' }}>لوحة المعلومات</div>
-            <div style={{ fontSize: 11.5, color: 'var(--txt-3)' }}>
-              عرض تراكمي · {periodLabel} · {m.shiftsCount} شيفت
+            <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--txt-1)' }}>لوحة المعلومات</div>
+            <div style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
+              {periodLabel} · {M.cur.length} شيفت · {M.itemsCount} بند
               {activeShift && <span style={{ color: '#22c55e' }}> · شيفت #{activeShift.monthlyShiftNum} نشط الآن</span>}
             </div>
           </div>
         </div>
-
-        {/* الفلتر */}
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 flex-wrap">
           <div className="flex rounded-lg overflow-hidden" style={{ border: '1px solid var(--inner-border)' }}>
-            {([['all','الكل'],['year','سنة'],['month','شهر'],['day','يوم']] as [FilterMode, string][]).map(([mode, label]) => (
-              <button key={mode} onClick={() => setFilterMode(mode)}
-                className="px-3 py-1.5 transition-all"
-                style={{
-                  fontSize: 12, fontWeight: filterMode === mode ? 700 : 500,
-                  background: filterMode === mode ? 'var(--accent)' : 'transparent',
-                  color: filterMode === mode ? '#fff' : 'var(--txt-2)',
-                }}>{label}</button>
+            {([['all', 'الكل'], ['year', 'سنة'], ['month', 'شهر'], ['day', 'يوم']] as [FilterMode, string][]).map(([mode, label]) => (
+              <button key={mode} onClick={() => setFilterMode(mode)} className="px-2.5 py-1 transition-all"
+                style={{ fontSize: 11, fontWeight: filterMode === mode ? 700 : 500, background: filterMode === mode ? 'var(--accent)' : 'transparent', color: filterMode === mode ? '#fff' : 'var(--txt-2)' }}>{label}</button>
             ))}
           </div>
-          {filterMode === 'year' && (
-            <select className="field text-xs" value={filterYear} onChange={e => setFilterYear(+e.target.value)} style={{ width: 90 }}>
-              {years.map(y => <option key={y} value={y}>{y}</option>)}
-            </select>
-          )}
-          {filterMode === 'month' && (
-            <>
-              <select className="field text-xs" value={filterMonth} onChange={e => setFilterMonth(+e.target.value)} style={{ width: 110 }}>
-                {MONTHS.map((mo, i) => <option key={mo} value={i + 1}>{mo}</option>)}
-              </select>
-              <select className="field text-xs" value={filterYear} onChange={e => setFilterYear(+e.target.value)} style={{ width: 80 }}>
-                {years.map(y => <option key={y} value={y}>{y}</option>)}
-              </select>
-            </>
-          )}
-          {filterMode === 'day' && (
-            <input className="field text-xs" type="date" value={filterDay} onChange={e => setFilterDay(e.target.value)} style={{ width: 150 }} />
-          )}
+          {filterMode === 'year' && <select className="field text-2xs" value={filterYear} onChange={e => setFilterYear(+e.target.value)} style={{ width: 80, padding: '4px 8px' }}>{years.map(y => <option key={y} value={y}>{y}</option>)}</select>}
+          {filterMode === 'month' && <>
+            <select className="field text-2xs" value={filterMonth} onChange={e => setFilterMonth(+e.target.value)} style={{ width: 95, padding: '4px 8px' }}>{MONTHS.map((mo, i) => <option key={mo} value={i + 1}>{mo}</option>)}</select>
+            <select className="field text-2xs" value={filterYear} onChange={e => setFilterYear(+e.target.value)} style={{ width: 70, padding: '4px 8px' }}>{years.map(y => <option key={y} value={y}>{y}</option>)}</select>
+          </>}
+          {filterMode === 'day' && <input className="field text-2xs" type="date" value={filterDay} onChange={e => setFilterDay(e.target.value)} style={{ width: 135, padding: '4px 8px' }} />}
         </div>
       </div>
 
       {loading ? (
-        <div className="text-center py-16" style={{ color: 'var(--txt-3)' }}>
-          <Icons.Refresh size={24} className="animate-spin mx-auto mb-2" /> جاري تحميل البيانات...
-        </div>
+        <div className="text-center py-16" style={{ color: 'var(--txt-3)' }}><Icons.Refresh size={24} className="animate-spin mx-auto mb-2" /> جاري تحميل البيانات...</div>
       ) : (
         <>
-          {/* لافتة شيفت نشط / بدء شيفت */}
           {!activeShift && (
-            <div className="card flex items-center gap-4 p-4"
-              style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.10), rgba(30,58,138,0.06))', border: '1px solid rgba(59,130,246,0.30)' }}>
-              <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}>
-                <Icons.Journal size={22} />
-              </div>
+            <div className="card flex items-center gap-3 p-2.5" style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.10), rgba(30,58,138,0.06))', border: '1px solid rgba(59,130,246,0.30)' }}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}><Icons.Journal size={16} /></div>
               <div className="flex-1 min-w-0">
-                <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--txt-1)' }}>لا يوجد شيفت نشط حالياً</div>
-                <div style={{ fontSize: 12, color: 'var(--txt-2)' }}>البيانات أعلاه تراكمية لكل الشيفتات السابقة. ابدأ شيفت جديد للتسجيل.</div>
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--txt-1)' }}>لا يوجد شيفت نشط حالياً</div>
+                <div style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>ابدأ شيفت جديد لبدء التسجيل.</div>
               </div>
-              <button onClick={() => onNavigate('daily')} className="btn-success-pro flex-shrink-0" style={{ fontSize: 13, padding: '9px 18px' }}>
-                🚀 ابدأ شيفت جديد
-              </button>
+              <button onClick={() => onNavigate('daily')} className="btn-success-pro flex-shrink-0" style={{ fontSize: 11.5, padding: '6px 14px' }}>🚀 ابدأ شيفت جديد</button>
             </div>
           )}
 
-          {/* ═══ بطاقات KPI التراكمية ═══ */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            {[
-              { label: 'إجمالي الوارد', value: m.totalIn,  color: '#22c55e', icon: '⬇' },
-              { label: 'إجمالي المنصرف', value: m.totalOut, color: '#ef4444', icon: '⬆' },
-              { label: 'الصافي', value: m.net, color: '#3b82f6', icon: '💰' },
-              { label: 'مبيعات POS', value: m.posSales, color: '#06b6d4', icon: '📟' },
-              { label: 'مبيعات فيزا', value: m.visaIn, color: '#f59e0b', icon: '💳' },
-              { label: 'التحصيلات', value: m.collections, color: '#8b5cf6', icon: '🧾' },
-            ].map(k => (
-              <div key={k.label} className="rounded-2xl p-3.5"
-                style={{ background: `linear-gradient(135deg, ${k.color}12, ${k.color}04)`, border: `1px solid ${k.color}38` }}>
-                <div className="flex items-center gap-1.5 mb-1">
-                  <span style={{ fontSize: 13 }}>{k.icon}</span>
-                  <span className="text-2xs font-bold" style={{ color: k.color }}>{k.label}</span>
-                </div>
-                <div className="tabular-nums font-bold" style={{ fontSize: 18, color: k.color, lineHeight: 1.1 }}>
-                  {fmt(k.value)} <span style={{ fontSize: 10 }}>ج</span>
-                </div>
-              </div>
-            ))}
+          {/* ═══ الصف الأول — الحسابات الأربعة (العهدة/الكاشير/الصندوق/مؤشرات عامة) بدل بطاقات المبيعات ═══ */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            <TopAccountCard title="حساب العهدة" icon={<Icons.Fund size={12} />} color="#f59e0b">
+              <Stat label="الإضافات" value={`${fmt(M.custodyAdd)} ج`} color="var(--txt-1)" />
+              <Stat label="المصروفات" value={`${fmt(M.custodyPaid)} ج`} color="#ef4444" />
+              <Stat label="المتبقي" value={`${fmt(M.custodyAdd - M.custodyPaid)} ج`} color="#f59e0b" />
+            </TopAccountCard>
+
+            <TopAccountCard title="حساب الكاشير" icon={<Icons.User size={12} />} color="#3b82f6">
+              <Stat label="نقدي" value={`${fmt(M.cashierPayVal)} ج`} color="var(--txt-1)" />
+              <Stat label="فيزا" value={`${fmt(M.visa)} ج`} color="#10b981" />
+              <Stat label="فوري" value={`${fmt(M.fawryOnly)} ج`} color="#a78bfa" />
+              <Stat label="الصافي" value={`${fmt(M.cashierNet)} ج`} color="#3b82f6" />
+            </TopAccountCard>
+
+            <TopAccountCard title="حساب الصندوق" icon={<Icons.Backup size={12} />} color="#22c55e">
+              <Stat label="رصيد البداية" value={`${fmt(M.fundOpening)} ج`} color="var(--txt-1)" />
+              <Stat label="الوارد" value={`${fmt(M.fundIn)} ج`} color="#22c55e" />
+              <Stat label="المنصرف" value={`${fmt(M.fundOut)} ج`} color="#ef4444" />
+              <Stat label="الرصيد الحالي" value={`${fmt(M.fundClosing)} ج`} color="#22c55e" />
+            </TopAccountCard>
+
+            <TopAccountCard title="مؤشرات عامة" icon={<Icons.Records size={12} />} color="#a78bfa" cols={3}>
+              <Stat label="أعلى شهر" value={generalStats.bestMonth ? `${fmt(generalStats.bestMonth.sales)} ج` : '—'} color="#22c55e" />
+              <Stat label="أقل شهر" value={generalStats.worstMonth ? `${fmt(generalStats.worstMonth.sales)} ج` : '—'} color="#ef4444" />
+              <Stat label="متوسط المبيعات" value={`${fmt(generalStats.avgMonthlySales)} ج`} color="#3b82f6" />
+              <Stat label="متوسط الأرباح" value={`${fmt(generalStats.avgMonthlyProfit)} ج`} color="#8b5cf6" />
+              <Stat label="عدد العمليات" value={String(generalStats.itemsInWindow)} color="var(--txt-1)" />
+              <Stat label="نسبة النمو" value={`${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(1)}%`} color={growthPct >= 0 ? '#22c55e' : '#ef4444'} />
+            </TopAccountCard>
           </div>
 
-          {/* ═══ الصف الأوسط: حالة الشيفتات + توزيع الدفع ═══ */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-            {/* حالة الشيفتات */}
-            <div className="card p-4">
-              <CardTitle icon={<Icons.Warning size={15} />} title="حالة الشيفتات" color="#f59e0b" />
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                {[
-                  { label: 'أوفر', value: m.surplus, color: '#10b981' },
-                  { label: 'متزن', value: m.balanced, color: '#f59e0b' },
-                  { label: 'عجز', value: m.deficit, color: '#ef4444' },
-                ].map(c => (
-                  <div key={c.label} className="rounded-xl p-2.5 text-center" style={{ background: c.color + '12', border: `1px solid ${c.color}35` }}>
-                    <div className="tabular-nums font-bold" style={{ fontSize: 22, color: c.color }}>{c.value}</div>
-                    <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>{c.label}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="flex items-center justify-between p-2.5 rounded-lg" style={{ background: 'var(--inner-bg)' }}>
-                <span className="text-xs" style={{ color: 'var(--txt-2)' }}>صافي النتيجة التراكمية</span>
-                <span className="tabular-nums font-bold" style={{ fontSize: 15, color: m.netResult > 0 ? '#10b981' : m.netResult < 0 ? '#ef4444' : '#f59e0b' }}>
-                  {m.netResult > 0 ? '+' : ''}{fmt(m.netResult)} ج
-                </span>
-              </div>
+          {/* ═══ ثلاثة أعمدة ثابتة: يسار · وسط · يمين — بلا عمود إزاحة (لا تمرير داخلي منفصل) ═══ */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr_1fr] gap-2 items-start">
+
+            {/* ═══ العمود الأيسر — الحسابات ═══ */}
+            <div className="space-y-1.5">
+              <AccountCard title="حسابات المشتريات" icon={<Icons.Download size={13} />} color="#f59e0b">
+                <Stat label="إجمالي المشتريات" value={`${fmt(M.purchases)} ج`} color="#f59e0b" />
+                <Stat label="عدد الفواتير" value={String(M.purchaseInvoiceCount)} color="var(--txt-1)" />
+                <Stat label="متوسط الفاتورة" value={`${fmt(M.avgInvoice)} ج`} color="var(--txt-1)" />
+                <Stat label="أعلى فاتورة" value={`${fmt(M.maxInvoice)} ج`} color="#f59e0b" />
+              </AccountCard>
+
+              <AccountCard title="حسابات الكاشير" icon={<Icons.User size={13} />} color="#3b82f6">
+                <Stat label="المقبوضات" value={`${fmt(M.cashierPayVal)} ج`} color="#22c55e" />
+                <Stat label="المنصرفات" value={`${fmt(M.custodyPaid)} ج`} color="#ef4444" />
+                <Stat label="صافي الكاشير" value={`${fmt(M.cashierNet)} ج`} color="#3b82f6" />
+                <Stat label="متوسط النقدية" value={`${fmt(M.avgCashPerShift)} ج`} color="var(--txt-1)" />
+              </AccountCard>
+
+              <AccountCard title="حسابات الخزينة" icon={<Icons.Backup size={13} />} color="#22c55e">
+                <Stat label="رصيد أول الفترة" value={`${fmt(M.fundOpening)} ج`} color="var(--txt-1)" />
+                <Stat label="المقبوضات" value={`${fmt(M.fundIn)} ج`} color="#22c55e" />
+                <Stat label="المنصرفات" value={`${fmt(M.fundOut)} ج`} color="#ef4444" />
+                <Stat label="الرصيد الحالي" value={`${fmt(M.fundClosing)} ج`} color="#22c55e" />
+              </AccountCard>
+
+              <AccountCard title="مؤشرات مباشرة" icon={<Icons.Reports size={13} />} color="#8b5cf6">
+                <Stat label="إجمالي الإيرادات" value={`${fmt(M.totalRevenue)} ج`} color="#22c55e" />
+                <Stat label="إجمالي المصروفات" value={`${fmt(M.totalExpensesAll)} ج`} color="#ef4444" />
+                <Stat label="صافي الربح" value={`${fmt(M.netProfit)} ج`} color={M.netProfit >= 0 ? '#22c55e' : '#ef4444'} />
+                <Stat label="نسبة الربحية" value={`${M.profitMarginPct.toFixed(1)}%`} color="#8b5cf6" />
+              </AccountCard>
+
+              <AccountCard title="مؤشرات إضافية" icon={<Icons.Employees size={13} />} color="#06b6d4">
+                <Stat label="عدد العملاء" value={String(partyCounts.customers)} color="var(--txt-1)" />
+                <Stat label="عدد الموردين" value={String(partyCounts.suppliers)} color="var(--txt-1)" />
+                <Stat label="عدد العمليات" value={String(M.itemsCount)} color="var(--txt-1)" />
+                <Stat label="متوسط العملية" value={`${fmt(M.avgTxValue)} ج`} color="#06b6d4" />
+              </AccountCard>
+
+              <AccountCard title="أفضل وأسوأ فترة" icon={<Icons.Records size={13} />} color="#d4a017">
+                <Stat label="أفضل شهر" value={generalStats.bestMonth ? generalStats.bestMonth.label : '—'} color="#22c55e" />
+                <Stat label="أسوأ شهر" value={generalStats.worstMonth ? generalStats.worstMonth.label : '—'} color="#ef4444" />
+                <Stat label="أعلى مبيعات (شيفت)" value={`${fmt(M.best?.sale ?? 0)} ج`} color="#22c55e" />
+                <Stat label="أقل مبيعات (شيفت)" value={`${fmt(M.worst?.sale ?? 0)} ج`} color="#ef4444" />
+              </AccountCard>
             </div>
 
-            {/* توزيع طرق الدفع */}
-            <div className="card p-4 lg:col-span-2">
-              <CardTitle icon={<Icons.Reports size={15} />} title="توزيع طرق الدفع" color="#06b6d4" />
-              <div className="space-y-2.5">
-                {m.payDist.map(d => {
-                  const total = m.payDist.reduce((s, x) => s + x.in + x.out, 0)
-                  const val = d.in + d.out
-                  const pct = total > 0 ? (val / total * 100) : 0
-                  return (
-                    <div key={d.method}>
-                      <div className="flex items-center justify-between mb-1">
-                        <div className="flex items-center gap-2">
-                          <span className="w-2 h-2 rounded-full" style={{ background: PAY_COLORS[d.method] }} />
-                          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt-1)' }}>{PAY_LABELS[d.method]}</span>
-                          <span className="text-2xs px-1.5 rounded" style={{ background: PAY_COLORS[d.method] + '20', color: PAY_COLORS[d.method] }}>{d.count}</span>
-                        </div>
-                        <span className="tabular-nums font-bold" style={{ fontSize: 12.5, color: PAY_COLORS[d.method] }}>{fmt(val)} ج ({pct.toFixed(0)}%)</span>
-                      </div>
-                      <div className="h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--inner-bg)' }}>
-                        <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: PAY_COLORS[d.method] }} />
-                      </div>
-                    </div>
-                  )
-                })}
+            {/* ═══ المنطقة الوسطى — أهم منطقة بصرية (بلا تمرير داخلي — تمرير الصفحة فقط) ═══ */}
+            <div className="space-y-1.5">
+              <div className="card p-2">
+                <CardTitle icon={<Icons.Reports size={13} />} title="المبيعات والمصروفات والأرباح — آخر 12 شهر" color="#3b82f6" />
+                <MiniCombo data={chartData} height={140} formatter={v => `${fmt(v)} ج`} />
               </div>
-            </div>
-          </div>
 
-          {/* ═══ جدول الشيفتات في الفترة ═══ */}
-          <div className="card p-0 overflow-hidden">
-            <div className="px-4 py-2.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-              <div className="flex items-center gap-2">
-                <Icons.Records size={15} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>الشيفتات ({m.shiftsCount})</span>
-              </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span className="tabular-nums" style={{ color: '#22c55e' }}>+{fmt(m.totalIn)}</span>
-                <span className="tabular-nums" style={{ color: '#ef4444' }}>−{fmt(m.totalOut)}</span>
-              </div>
-            </div>
-            <div className="overflow-auto" style={{ maxHeight: 320 }}>
-              {shifts.length === 0 ? (
-                <div className="text-center py-8 text-xs" style={{ color: 'var(--txt-3)' }}>لا توجد شيفتات في هذه الفترة</div>
-              ) : (
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 z-10">
-                    <tr>
-                      <th className="th">#</th><th className="th">التاريخ</th><th className="th">النوع</th>
-                      <th className="th">الكاشير</th>
-                      <th className="th" style={{ color: '#06b6d4' }}>POS</th>
-                      <th className="th">الحالة</th>
-                    </tr>
-                  </thead>
+              <div className="card p-0 overflow-hidden">
+                <div className="px-3 py-1.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+                  <div className="flex items-center gap-1.5"><Icons.Reports size={12} style={{ color: 'var(--accent)' }} /><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt-1)' }}>اتجاه آخر 12 شهر</span></div>
+                  <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>المخزون يُدخل يدوياً لكل شهر</span>
+                </div>
+                <table className="w-full text-2xs dash-compact-table">
+                  <thead className="sticky top-0 z-10"><tr>
+                    <th className="th">الشهر</th>
+                    <th className="th" style={{ color: '#22c55e' }}>مبيعات</th>
+                    <th className="th" style={{ color: '#ef4444' }}>مصروفات</th>
+                    <th className="th" style={{ color: '#3b82f6' }}>أرباح</th>
+                    <th className="th" style={{ color: '#8b5cf6' }}>نسبة الربحية</th>
+                    <th className="th" style={{ color: '#a78bfa' }}>مخزون</th>
+                  </tr></thead>
                   <tbody>
-                    {[...shifts].reverse().map(s => {
-                      const { result, kind } = shiftResultOf(s)
-                      const col = kind === 'surplus' ? '#10b981' : kind === 'deficit' ? '#ef4444' : '#f59e0b'
-                      const lbl = kind === 'surplus' ? 'أوفر' : kind === 'deficit' ? 'عجز' : 'متزن'
-                      return (
-                        <tr key={s.id} className="tr">
-                          <td className="td font-bold" style={{ color: 'var(--accent)' }}>#{s.monthlyShiftNum}</td>
-                          <td className="td tabular-nums">{fmtDate(s.date)}</td>
-                          <td className="td">{shiftTypeLabel(s.type)}</td>
-                          <td className="td">{s.cashierName}</td>
-                          <td className="td tabular-nums" style={{ color: '#06b6d4' }}>{fmt(s.posSales ?? 0)}</td>
-                          <td className="td">
-                            <span className="text-2xs px-2 py-0.5 rounded-full font-bold" style={{ background: col + '22', color: col }}>
-                              {lbl} {result !== 0 && `(${fmt(Math.abs(result))})`}
-                            </span>
-                          </td>
-                        </tr>
-                      )
-                    })}
+                    {twelveMonths.map(m => (
+                      <tr key={m.key} className="tr">
+                        <td className="td font-bold">{m.label}</td>
+                        <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(m.sales)}</td>
+                        <td className="td tabular-nums" style={{ color: '#ef4444' }}>{fmt(m.purchases + m.expenses)}</td>
+                        <td className="td tabular-nums" style={{ color: m.profit >= 0 ? '#3b82f6' : '#ef4444' }}>{fmt(m.profit)}</td>
+                        <td className="td tabular-nums" style={{ color: '#8b5cf6' }}>{m.margin.toFixed(1)}%</td>
+                        <td className="td"><InventoryCell value={m.inventory} onSave={v => saveInventory(m.key, v)} /></td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
-              )}
+              </div>
+
+              {/* جدول الشيفتات — ملحق داخل المنطقة الوسطى (لا بطاقة ممتدة مستقلة، ولا تمرير داخلي) */}
+              <div className="card p-0 overflow-hidden">
+                <div className="px-3 py-1.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+                  <div className="flex items-center gap-1.5"><Icons.Records size={12} style={{ color: 'var(--accent)' }} /><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt-1)' }}>الشيفتات ({M.cur.length})</span></div>
+                  <span className="tabular-nums text-2xs" style={{ color: '#22c55e' }}>مبيعات {fmt(M.sales)} ج</span>
+                </div>
+                {M.cur.length === 0 ? (
+                  <div className="text-center py-6 text-2xs" style={{ color: 'var(--txt-3)' }}>لا توجد شيفتات في هذه الفترة</div>
+                ) : (
+                  <table className="w-full text-2xs dash-compact-table">
+                    <thead className="sticky top-0 z-10"><tr>
+                      <th className="th">#</th><th className="th">التاريخ</th><th className="th">النوع</th><th className="th">الكاشير</th>
+                      <th className="th" style={{ color: '#22c55e' }}>المبيعات</th><th className="th">الحالة</th>
+                    </tr></thead>
+                    <tbody>
+                      {[...M.cur].reverse().map(s => {
+                        const { result, status } = resultOf(s)
+                        const col = status === 'surplus' ? '#10b981' : status === 'deficit' ? '#ef4444' : '#f59e0b'
+                        const lbl = status === 'surplus' ? 'أوفر' : status === 'deficit' ? 'عجز' : 'مطابق'
+                        return (
+                          <tr key={s.id} className="tr">
+                            <td className="td font-bold" style={{ color: 'var(--accent)' }}>#{s.monthlyShiftNum}</td>
+                            <td className="td tabular-nums">{fmtDate(s.date)}</td>
+                            <td className="td">{shiftTypeLabel(s.type)}</td>
+                            <td className="td">{s.cashierName}</td>
+                            <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(saleOf(s))}</td>
+                            <td className="td"><span className="text-2xs px-2 py-0.5 rounded-full font-bold" style={{ background: col + '22', color: col }}>{lbl} {result !== 0 && `(${fmt(Math.abs(result))})`}</span></td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+
+            {/* ═══ العمود الأيمن — بطاقات الأداء (نفس الارتفاع) + عدّاد الأوفر/العجز ═══ */}
+            <div className="space-y-1.5">
+              <NetGauge value={M.net} />
+              <Kpi label="مبيعات POS" value={M.posOnly} color="#22c55e" icon="🖥️" />
+              <Kpi label="مبيعات فوري" value={M.fawryOnly} color="#a78bfa" icon="📱" />
+              <Kpi label="مبيعات فيزا" value={M.visa} color="#10b981" icon="💳" />
+              <Kpi label="الأرباح" value={M.netProfit} color={M.netProfit >= 0 ? '#3b82f6' : '#ef4444'} icon="📈" />
+              <Kpi label="عدد العمليات" value={M.itemsCount} color="#06b6d4" icon="🧾" raw unit="" />
+              <Kpi label="متوسط العملية" value={M.avgTxValue} color="#8b5cf6" icon="⚖️" />
+              <Kpi label="أفضل شيفت" value={M.best?.sale ?? 0} color="#f59e0b" icon="🏆" hint={M.best ? `#${M.best.s.monthlyShiftNum}` : undefined} />
+              <Kpi label="أفضل شهر" value={generalStats.bestMonth?.sales ?? 0} color="#d4a017" icon="🗓️" hint={generalStats.bestMonth?.label} />
             </div>
           </div>
         </>
       )}
     </div>
   )
+}
+
+// ═══ مكوّنات مشتركة ═══
+
+function CardTitle({ icon, title, color = '#3b82f6' }: { icon: React.ReactNode; title: string; color?: string }) {
+  return <div className="flex items-center gap-1.5 mb-2 pb-1.5" style={{ borderBottom: '1px solid var(--inner-border)' }}><span style={{ color }}>{icon}</span><span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--txt-1)' }}>{title}</span></div>
+}
+
+/** بطاقة حساب مصغّرة للصف الأول — عنوان + شبكة صغيرة من القيم (نفس الارتفاع للأربعة) */
+function TopAccountCard({ title, icon, color, cols = 2, children }: { title: string; icon: React.ReactNode; color: string; cols?: 2 | 3; children: React.ReactNode }) {
+  return (
+    <div className="card p-2" style={{ borderTop: `2px solid ${color}` }}>
+      <CardTitle icon={icon} title={title} color={color} />
+      <div className={cols === 3 ? 'grid grid-cols-3 gap-2' : 'grid grid-cols-2 gap-2'}>{children}</div>
+    </div>
+  )
+}
+
+/** عدّاد نصف دائري صغير للأوفر/العجز الإجمالي — أعلى العمود الأيمن */
+function NetGauge({ value }: { value: number }) {
+  const scale = Math.max(Math.abs(value) * 1.25, 100000)
+  const ratio = Math.max(-1, Math.min(1, value / scale))
+  const angle = ratio * 80
+  const label = value > 0 ? 'أوفر' : value < 0 ? 'عجز' : 'مطابق'
+  const color = value > 0 ? '#22c55e' : value < 0 ? '#ef4444' : '#f59e0b'
+  const segs = ['#ef4444', '#f97316', '#fbbf24', '#84cc16', '#22c55e']
+  const segPaths = [
+    'M 22 100 A 78 78 0 0 1 35.3 56.4',
+    'M 36.9 54.1 A 78 78 0 0 1 73.3 26.7',
+    'M 75.9 25.8 A 78 78 0 0 1 121.5 25.0',
+    'M 124.1 25.8 A 78 78 0 0 1 161.5 52.0',
+    'M 163.1 54.1 A 78 78 0 0 1 178.0 97.3',
+  ]
+  return (
+    <div className="card p-2 flex flex-col items-center" style={{ minHeight: 58 }}>
+      <div className="w-full flex items-center justify-between mb-0.5">
+        <span className="text-2xs font-bold" style={{ color: 'var(--txt-2)' }}>حالة الأوفر/العجز</span>
+        <span className="text-2xs font-black" style={{ color }}>{label}</span>
+      </div>
+      <div className="flex items-center gap-2 w-full">
+        <svg viewBox="0 0 200 118" style={{ width: 70, flexShrink: 0 }}>
+          {segPaths.map((d, i) => <path key={i} d={d} fill="none" stroke={segs[i]} strokeWidth={13} strokeLinecap="round" opacity={0.92} />)}
+          <g transform={`rotate(${angle} 100 100)`} style={{ transition: 'transform 0.6s cubic-bezier(0.34,1.56,0.64,1)' }}>
+            <line x1="100" y1="100" x2="100" y2="34" stroke="var(--txt-1)" strokeWidth="4" strokeLinecap="round" />
+          </g>
+          <circle cx="100" cy="100" r="7" fill="var(--txt-1)" />
+          <circle cx="100" cy="100" r="3" fill={color} />
+        </svg>
+        <div className="tabular-nums font-black" style={{ fontSize: 15, color }}>{fmt(Math.abs(value))} <span style={{ fontSize: 9.5 }}>ج</span></div>
+      </div>
+    </div>
+  )
+}
+
+/** بطاقة حساب — عنوان + شبكة 2×2 من القيم (العمود الأيسر) */
+function AccountCard({ title, icon, color, children }: { title: string; icon: React.ReactNode; color: string; children: React.ReactNode }) {
+  return (
+    <div className="card p-2">
+      <CardTitle icon={icon} title={title} color={color} />
+      <div className="grid grid-cols-2 gap-2">{children}</div>
+    </div>
+  )
+}
+function Stat({ label, value, color }: { label: string; value: string; color: string }) {
+  return (
+    <div>
+      <div className="text-2xs mb-0.5" style={{ color: 'var(--txt-3)' }}>{label}</div>
+      <div className="tabular-nums font-bold truncate" style={{ fontSize: 12.5, color }}>{value}</div>
+    </div>
+  )
+}
+
+/** بطاقة أداء مفردة (العمود الأيمن) — نفس الارتفاع لكل البطاقات */
+function Kpi({ label, value, color, icon, hint, trend, raw, unit = 'ج' }: { label: string; value: number; color: string; icon: string; hint?: string; trend?: React.ReactNode; raw?: boolean; unit?: string }) {
+  return (
+    <div className="card p-2 flex flex-col justify-between" style={{ minHeight: 58 }}>
+      <div className="flex items-center justify-between mb-0.5 gap-1">
+        <div className="flex items-center gap-1.5 min-w-0"><span style={{ fontSize: 13 }}>{icon}</span><span className="text-2xs font-bold truncate" style={{ color: 'var(--txt-2)' }}>{label}</span></div>
+        {trend}
+      </div>
+      <div className="tabular-nums font-black" style={{ fontSize: 16, color, lineHeight: 1.2 }}>{raw ? value : fmt(value)} {unit && <span style={{ fontSize: 9.5 }}>{unit}</span>}</div>
+      {hint && <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>{hint}</div>}
+    </div>
+  )
+}
+
+/** خلية مخزون قابلة للتحرير — تُدخَل يدوياً لكل شهر وتُحفظ في settings (لا يوجد نظام مخزون كامل بعد) */
+function InventoryCell({ value, onSave }: { value: number; onSave: (v: string) => void }) {
+  const [v, setV] = useState(String(value / 100))
+  useEffect(() => { setV(String(value / 100)) }, [value])
+  return <input value={v} onChange={e => setV(e.target.value)} onBlur={() => onSave(v)}
+    className="tabular-nums font-bold text-left w-20" style={{
+      background: 'rgba(167,139,250,0.08)', border: '1px solid rgba(167,139,250,0.3)',
+      borderRadius: 5, padding: '2px 5px', color: '#a78bfa', fontSize: 10.5, outline: 'none',
+    }} />
 }

@@ -123,11 +123,13 @@ export function getFinancials(db: Database.Database, month: string): FinancialDa
     WHERE s.date LIKE ? AND t.pay_method = 'cashier'
   `).get(monthLike(month)) as { cin: number; cout: number }
 
-  // الذمم المدينة = بنود الدفع الآجل (منصرف − وارد، أي المتبقي)
+  // الذمم المدينة = بنود التصنيف الفرعي «مبيعات آجل» (منصرف − وارد، أي المتبقي) — ADR-012 v2
   const credRow = db.prepare(`
     SELECT COALESCE(SUM(t.amount_out),0) AS out, COALESCE(SUM(t.amount_in),0) AS inn
-    FROM transactions t JOIN shifts s ON s.id = t.shift_id
-    WHERE s.date LIKE ? AND t.pay_method = 'credit'
+    FROM transactions t
+      JOIN shifts s ON s.id = t.shift_id
+      JOIN sub_categories sc ON sc.id = t.sub_category_id
+    WHERE s.date LIKE ? AND sc.name = 'مبيعات آجل'
   `).get(monthLike(month)) as { out: number; inn: number }
 
   const purchases = sumOut('%مشتر%')

@@ -73,11 +73,23 @@ export function getTreasuryData(db: Database.Database, month: string): TreasuryD
       SELECT id, date, description, type, amount FROM treasury_adjustments WHERE date LIKE ?
     `).all(`${month}%`) as typeof adjustments
   } catch { /* */ }
+  
+  // جلب كل مصروفات الإدارة للشهر مرة واحدة لتجنب N+1
+  const mgmtOutByShiftId = new Map<number, number>()
+  try {
+    const mgmtRows = db.prepare(`
+      SELECT s.id AS shift_id, COALESCE(SUM(t.amount_out), 0) AS total
+      FROM shifts s JOIN transactions t ON s.id = t.shift_id
+      WHERE s.date LIKE ? AND t.pay_method = 'management' AND s.status IN ${STATUSES}
+      GROUP BY s.id
+    `).all(`${month}%`) as { shift_id: number; total: number }[]
+    mgmtRows.forEach(r => mgmtOutByShiftId.set(r.shift_id, r.total))
+  } catch { /* */ }
 
   // دمج الحركات وترتيبها بالتاريخ
   const merged: TreasuryRow[] = [
     ...shifts.map(s => {
-      const mgmtOut = (db.prepare(MGMT_BY_SHIFT).get(s.id) as { total: number }).total
+      const mgmtOut = mgmtOutByShiftId.get(s.id) ?? 0
       const cashIn = s.cashIn || 0
       return { kind: 'shift' as const, id: s.id, shiftNum: s.num, date: s.date,
         label: s.cashier, cashIn, mgmtOut, net: cashIn - mgmtOut, running: 0, status: s.status }

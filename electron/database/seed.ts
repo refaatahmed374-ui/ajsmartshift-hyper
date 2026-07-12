@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import { initDefaultPermissions } from './repositories/permissions'
+import { normalizeValue } from '../services/excelImport/normalize'
 
 export function seedDatabase(db: Database.Database): void {
   const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c
@@ -10,13 +11,9 @@ export function seedDatabase(db: Database.Database): void {
   db.prepare(`INSERT INTO branches (name, address) VALUES (?, ?)`).run('الفرع الرئيسي', '')
 
   // ===== مستخدمون =====
+  // الوضع الافتراضي: حساب المدير فقط — العميل يضيف/يحذف مستخدمين بنفسه من إدارة المستخدمين
   const users = [
     { username: 'mgr',    displayName: 'المدير',        role: 'manager',    pass: '1234', color: '#f85149' },
-    { username: 'sup',    displayName: 'المشرف',        role: 'supervisor', pass: '4321', color: '#d29922' },
-    { username: 'c1',     displayName: 'كاشير 1',       role: 'cashier',    pass: '111',  color: '#388bfd' },
-    { username: 'c2',     displayName: 'كاشير 2',       role: 'cashier',    pass: '222',  color: '#2ea043' },
-    { username: 'c3',     displayName: 'كاشير 3',       role: 'cashier',    pass: '333',  color: '#8957e5' },
-    { username: 'c4',     displayName: 'كاشير 4',       role: 'cashier',    pass: '444',  color: '#e3b341' },
   ]
   const insertUser = db.prepare(
     `INSERT INTO users (username, display_name, password_hash, role, color) VALUES (?, ?, ?, ?, ?)`
@@ -28,29 +25,36 @@ export function seedDatabase(db: Database.Database): void {
   }
 
   // ===== التصنيفات الرئيسية =====
+  // kind: يحدّد اتجاه المعاملة في استيراد Excel (income/collection=وارد، الباقي=منصرف)
+  // المرجع: قالب إكسل «حسابات حورس» (الفئات الفعلية المستخدمة في اليوميات)
   const mainCats = [
-    { name: 'إيرادات',          color: '#2ea043', order: 1 },
-    { name: 'مصروفات',          color: '#f85149', order: 2 },
-    { name: 'أجور',             color: '#8957e5', order: 3 },
-    { name: 'مشتريات',          color: '#d29922', order: 4 },
-    { name: 'مرتجعات',          color: '#388bfd', order: 5 },
-    { name: 'تحصيل',            color: '#2ea043', order: 6 },
-    { name: 'متنوع',            color: '#6e7681', order: 7 },
+    { name: 'مبيعات',           color: '#2ea043', order: 1, kind: 'income'     },
+    { name: 'تحصيل',            color: '#22d3ee', order: 2, kind: 'collection' },
+    { name: 'مرتجعات',          color: '#388bfd', order: 3, kind: 'return'     },
+    { name: 'خصومات',           color: '#ec4899', order: 4, kind: 'expense'    },
+    { name: 'مشتريات',          color: '#d29922', order: 5, kind: 'purchase'   },
+    { name: 'أجور',             color: '#8957e5', order: 6, kind: 'expense'    },
+    { name: 'مصروفات',          color: '#f85149', order: 7, kind: 'expense'    },
+    { name: 'استبدالات',        color: '#f97316', order: 8, kind: 'expense'    },
   ]
   const insertMain = db.prepare(
-    `INSERT INTO main_categories (name, color, sort_order) VALUES (?, ?, ?)`
+    `INSERT INTO main_categories (name, color, sort_order, kind) VALUES (?, ?, ?, ?)`
   )
-  for (const c of mainCats) insertMain.run(c.name, c.color, c.order)
+  for (const c of mainCats) insertMain.run(c.name, c.color, c.order, c.kind)
 
   // ===== التصنيفات الفرعية =====
   const subCats: { main: string; subs: string[] }[] = [
-    { main: 'إيرادات', subs: ['مبيعات نقدي', 'مبيعات فيزا', 'مبيعات آجل', 'مبيعات فوري'] },
-    { main: 'مصروفات', subs: ['أدوات نظافة', 'مصاريف تشغيل', 'صيانة', 'استهلاكات', 'إيجار', 'مرافق'] },
-    { main: 'أجور',    subs: ['راتب شهري', 'سلفة', 'مكافأة', 'خصم'] },
-    { main: 'مشتريات', subs: ['مشتريات عامة', 'مواد خام', 'أدوات'] },
-    { main: 'مرتجعات', subs: ['مرتجع مشتريات', 'مرتجع مبيعات'] },
-    { main: 'تحصيل',   subs: ['تحصيل آجل', 'خصم مبيعات'] },
-    { main: 'متنوع',   subs: ['بند متنوع'] },
+    { main: 'مبيعات',    subs: ['مبيعات فيزا', 'مبيعات آجل', 'مبيعات توصيل', 'مبيعات لحوم'] },
+    { main: 'تحصيل',     subs: ['تحصيل مبيعات آجلة', 'تحصيل مرتجع مشتريات'] },
+    { main: 'مرتجعات',   subs: ['مرتجع مبيعات', 'مرتجع مشتريات'] },
+    { main: 'خصومات',    subs: ['خصومات البيع'] },
+    { main: 'مشتريات',   subs: [
+        'مشتريات عامة', 'مشتريات اللحوم', 'مشتريات فراخ', 'شحن ونقل', 'هوالك منتجات',
+        'إنتاج جبن', 'إنتاج فراخ', 'إنتاج لحوم', 'أدوات تغليف', 'أدوات نظافة', 'أدوات مكتبية',
+      ] },
+    { main: 'أجور',      subs: ['راتب موظف', 'سلفة موظف'] },
+    { main: 'مصروفات',   subs: ['صيانة', 'كهرباء', 'تليفون وإنترنت', 'مصاريف حكومية', 'إيجار', 'اهلاك أصول', 'مياة', 'تأمينات', 'مرافق'] },
+    { main: 'استبدالات', subs: ['كيمو استبدال', 'اسكويز استبدال'] },
   ]
   const getMainId = db.prepare(`SELECT id FROM main_categories WHERE name = ?`)
   const insertSub  = db.prepare(
@@ -59,6 +63,30 @@ export function seedDatabase(db: Database.Database): void {
   for (const g of subCats) {
     const main = getMainId.get(g.main) as { id: number }
     g.subs.forEach((s, i) => insertSub.run(main.id, s, i + 1))
+  }
+
+  // ===== قواعد تعيين استيراد Excel الافتراضية (مفردات قالب حورس ← التصنيفات الجديدة) =====
+  // تجعل استيرادات اليومية تُطابَق تلقائياً بلا مراجعة يدوية.
+  const importRules: [string, string][] = [ // [قيمة الإكسل, اسم التصنيف الفرعي]
+    ['فيزا', 'مبيعات فيزا'], ['اجل', 'مبيعات آجل'], ['اجور', 'راتب موظف'],
+    ['خصومات البيع', 'خصومات البيع'], ['مرتجع مبيعات', 'مرتجع مبيعات'],
+    ['انتاج جبن', 'إنتاج جبن'], ['ادوات تغليف', 'أدوات تغليف'], ['ادوات نظافه', 'أدوات نظافة'],
+    ['ادوات مكتبيه', 'أدوات مكتبية'], ['تليفون وانترنت', 'تليفون وإنترنت'],
+    ['صيانه', 'صيانة'], ['كهرباء', 'كهرباء'], ['مصاريف حكوميه', 'مصاريف حكومية'],
+    ['كيمو استبدال', 'كيمو استبدال'], ['اسكويز استبدال', 'اسكويز استبدال'],
+    // v2.31.5 — قواعد تعيين مفقودة للتصنيفات الفرعية الجديدة (شيت التقفيل الشهري)
+    ['مبيعات توصيل', 'مبيعات توصيل'], ['مبيعات لحوم', 'مبيعات لحوم'],
+    ['مشتريات اللحوم', 'مشتريات اللحوم'], ['مشتريات فراخ', 'مشتريات فراخ'],
+    ['شحن ونقل', 'شحن ونقل'], ['هوالك منتجات', 'هوالك منتجات'],
+    ['انتاج فراخ', 'إنتاج فراخ'], ['انتاج لحوم', 'إنتاج لحوم'],
+    ['مرتجع مشتريات', 'مرتجع مشتريات'],
+    ['ايجار', 'إيجار'], ['اهلاك اصول', 'اهلاك أصول'], ['مياه', 'مياة'], ['تامينات', 'تأمينات'], ['مرافق', 'مرافق'],
+  ]
+  const getSub = db.prepare(`SELECT id, main_category_id AS mid FROM sub_categories WHERE name = ?`)
+  const insertMap = db.prepare(`INSERT OR IGNORE INTO import_category_map (excel_value, main_category_id, sub_category_id) VALUES (?, ?, ?)`)
+  for (const [ex, subName] of importRules) {
+    const sub = getSub.get(subName) as { id: number; mid: number } | undefined
+    if (sub) insertMap.run(normalizeValue(ex), sub.mid, sub.id)
   }
 
   // ===== إعدادات افتراضية =====

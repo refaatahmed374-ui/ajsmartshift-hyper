@@ -92,9 +92,9 @@ export default function NotificationsPage({ embedded = false, forcedSection }: {
       const all = await call(api.notif.getAll({ unreadOnly })) as Notification[]
       setNotifs(all.filter(n => n.type !== 'approval_pending'))
     } catch (e) { show((e as Error).message, 'error') }
-  }
-  async function loadSysInfo() { try { setSysInfo(await call(api.system.info()) as SysInfo) } catch {} }
-  async function loadStorage() { try { setStorage(await call(api.system.storageInfo()) as StorageInfo) } catch {} }
+  }  
+  async function loadSysInfo() { try { setSysInfo(await call(api.system.info()) as SysInfo) } catch (e) { console.error('Failed to load system info:', e) } }
+  async function loadStorage() { try { setStorage(await call(api.system.storageInfo()) as StorageInfo) } catch (e) { console.error('Failed to load storage info:', e) } }
 
   useEffect(() => { loadNotifs() }, [unreadOnly])
   useEffect(() => { loadSysInfo(); loadStorage() }, [])

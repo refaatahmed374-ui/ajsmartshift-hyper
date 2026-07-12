@@ -38,6 +38,26 @@ export function getTransactionsByShift(db: Database.Database, shiftId: number): 
     .all(shiftId) as Record<string, unknown>[]).map(row2tx)
 }
 
+/**
+ * جلب كل المعاملات لمجموعة من الشيفتات في استعلام واحد.
+ * @param db - كائن قاعدة البيانات.
+ * @param shiftIds - مصفوفة من أرقام الشيفتات.
+ * @returns مصفوفة من المعاملات.
+ */
+export function getTransactionsByShiftIds(db: Database.Database, shiftIds: number[]): Transaction[] {
+  if (shiftIds.length === 0) return []
+  const placeholders = shiftIds.map(() => '?').join(',')
+  const sql = `
+    ${TX_SELECT}
+    WHERE t.shift_id IN (${placeholders})
+    ORDER BY t.created_at ASC
+  `
+  return (db.prepare(sql).all(...shiftIds) as Record<string, unknown>[]).map(row2tx)
+}
+
+
+
+
 export function addTransaction(
   db: Database.Database,
   data: {
@@ -78,14 +98,18 @@ export function addTransaction(
       const mainName = data.mainCategoryId ? (db.prepare(
         `SELECT name FROM main_categories WHERE id = ?`
       ).get(data.mainCategoryId) as { name: string } | undefined)?.name : null
+      // الآجل يُحدَّد بالتصنيف الفرعي «مبيعات آجل» لا بطريقة الدفع (ADR-012 v2)
+      const subName = data.subCategoryId ? (db.prepare(
+        `SELECT name FROM sub_categories WHERE id = ?`
+      ).get(data.subCategoryId) as { name: string } | undefined)?.name : null
       const today = new Date().toISOString().slice(0, 10)
 
       // التحقق من أن العميل موجود
       const customerExists = db.prepare(`SELECT id FROM customers WHERE id = ?`).get(data.customerId)
       if (!customerExists) {
         console.warn(`[ledger] customer ${data.customerId} not found, skipping ledger entry`)
-      } else if (data.payMethod === 'credit') {
-        // دفع آجل → دين على العميل (مدين)
+      } else if (subName === 'مبيعات آجل') {
+        // بيع آجل → دين على العميل (مدين)
         const amount = data.amountOut > 0 ? data.amountOut : data.amountIn
         addLedgerEntry(db, {
           partyType: 'customer', partyId: data.customerId,

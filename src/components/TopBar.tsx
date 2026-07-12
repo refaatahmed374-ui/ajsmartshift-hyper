@@ -3,6 +3,7 @@ import { useTheme } from '../store/theme'
 import Icons from './Icon'
 import { fmt, todayISO, fmtDate } from '../lib/format'
 import { useShift } from '../store/shift'
+import { APP_VERSION } from '../version'
 import { useEffect, useState } from 'react'
 
 interface Props { page: string }
@@ -54,7 +55,7 @@ export default function TopBar({ page }: Props) {
                    boxShadow: '0 2px 8px rgba(59,130,246,0.4)' }}>AJ</div>
         <span className="aj-topbar-text text-xs font-bold hidden sm:block">Smart Shift</span>
         <span className="text-2xs px-1.5 py-0.5 rounded-full hidden md:block font-semibold"
-          style={{ background: 'rgba(96,165,250,0.18)', color: '#60a5fa' }}>v2.31.0</span>
+          style={{ background: 'rgba(96,165,250,0.18)', color: '#60a5fa' }}>v{APP_VERSION}</span>
       </div>
 
       <div className="flex-1" />

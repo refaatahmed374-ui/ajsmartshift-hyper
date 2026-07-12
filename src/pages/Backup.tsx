@@ -72,12 +72,13 @@ export default function BackupPage() {
   async function handleRestore() {
     if (!restoring) return
     try {
-      // استعادة النسخة — تتطلب إعادة تشغيل
-      await call(api.backup.delete(restoring.path + '__restore_trigger__'))
-    } catch {
-      // نستخدم backup:now كحل بديل بسيط يعرض الرسالة
+      // استعادة النسخة تتطلب إعادة تشغيل البرنامج.
+      // سيقوم الكود في العملية الرئيسية بفك ضغط النسخة واستبدال قاعدة البيانات الحالية.
+      await call(api.backup.restore(restoring.path))
+      show('تم تحديد النسخة للاستعادة. سيتم تطبيقها عند إعادة تشغيل البرنامج.', 'info')
+    } catch (e) {
+      show((e as Error).message, 'error')
     }
-    show('ستتم استعادة النسخة عند إعادة تشغيل البرنامج', 'info')
     setRestoring(null)
   }
 

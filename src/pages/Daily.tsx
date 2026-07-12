@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useShift } from '../store/shift'
+import ShiftSheet from '../components/ShiftSheet'
 import { useAuth } from '../store/auth'
 import { useToast } from '../store/toast'
 import { usePermissions } from '../store/permissions'
@@ -10,10 +11,10 @@ import { fmt, parsePias, todayISO, nowTime, shiftTypeLabel, statusLabel, fmtDate
 import { calcFawry, calcCustody, calcShiftAnalysis, calcCashierTotal, detectShiftType } from '../../core/engine'
 import type { Transaction, Employee, User } from '../../core/types'
 
-type PayMethod = 'cashier' | 'management' | 'credit' | 'visa'
+type PayMethod = 'cashier' | 'management'
 
 const PAY_LABELS: Record<PayMethod, string> = {
-  cashier: 'كاشير', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا',
+  cashier: 'كاشير', management: 'خزينة الإدارة',
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -85,7 +86,7 @@ export default function Daily() {
   const {
     activeShift, journal, transactions, fawry, custody,
     mainCats, subCats, loadActiveShift, loadCategories,
-    addTransaction, addTransactionsBatch, updateTransaction, deleteTransaction, updateFawry, updateCustody,
+    addTransaction, addTransactionsBatch, updateTransaction, deleteTransaction, updateFawry, updateCustody, refreshAll,
   } = useShift()
 
   // ===== مودالات =====
@@ -324,9 +325,10 @@ export default function Daily() {
     })
   }
 
-  // شرط العميل في نموذج التعديل
+  // شرط العميل في نموذج التعديل — الآجل بالتصنيف الفرعي «مبيعات آجل» (ADR-012 v2)
   const editMainName = mainCats.find(c => c.id === editSavedForm.mainCategoryId)?.name ?? ''
-  const editCustomerEnabled = editSavedForm.payMethod === 'credit' || editMainName === 'تحصيل'
+  const editSubName = subCats.find(s => s.id === editSavedForm.subCategoryId)?.name ?? ''
+  const editCustomerEnabled = editSubName === 'مبيعات آجل' || editMainName === 'تحصيل'
 
   async function handleSaveEditedTx() {
     if (!editSavedTx) return
@@ -336,7 +338,7 @@ export default function Daily() {
     }
     // تحقق العميل
     if (editCustomerEnabled && !editSavedForm.customerId) {
-      const reason = editSavedForm.payMethod === 'credit' ? 'دفع آجل' : 'تحصيل'
+      const reason = editSubName === 'مبيعات آجل' ? 'بيع آجل' : 'تحصيل'
       show(`⚠ هذا البند (${reason}) يحتاج اختيار عميل`, 'error'); return
     }
     setSavingEditSaved(true)
@@ -409,16 +411,16 @@ export default function Daily() {
         .filter(t => t.payMethod === 'management')
         .reduce((s, t) => s + t.amountOut, 0)
       await updateCustody(activeShift.id, {
-        addFromFund:    parsePias(custodyForm.addFromFund || '0'),
+        addFromFund:    parsePias(custodyForm.addFromFund),
         managementPaid: managementAuto,
       })
-      // النقدية المتوقعة تُحسب تلقائياً = رصيد البداية + وارد − منصرف
-      const expectedCash = activeShift.openingBalance + totalIn - totalOut
       const posPiasVal     = parsePias(posSales || '0')
       const remainingPias  = parsePias(cashierRemaining || '0')
+      // v2.31.3 إصلاح: تم تمرير `expectedCash` بدلاً من `remainingPias`.
+      // `closeShift` الآن تتوقع `cashierRemaining` في المعامل الأول.
       await call(api.shifts.close(
         activeShift.id,
-        expectedCash,
+        remainingPias,
         posPiasVal,
         remainingPias,
       ))
@@ -513,7 +515,7 @@ export default function Daily() {
     // تحقق: كل بند يحتاج عميل (آجل أو تحصيل)
     const missingCustomer = filled.find(d => isCustomerEnabled(d) && !d.customerId)
     if (missingCustomer) {
-      const reason = missingCustomer.payMethod === 'credit' ? 'دفع آجل' : 'تحصيل'
+      const reason = missingCustomer.subCategoryName === 'مبيعات آجل' ? 'بيع آجل' : 'تحصيل'
       show(`⚠ بند "${missingCustomer.description}" (${reason}) يحتاج اختيار عميل`, 'error')
       return
     }
@@ -560,7 +562,7 @@ export default function Daily() {
   // 1) طريقة الدفع = آجل (دين على العميل)
   // 2) أي بند تصنيفه الرئيسي = "تحصيل" (سداد من العميل)
   function isCustomerEnabled(d: DraftTx): boolean {
-    return d.payMethod === 'credit' || d.mainCategoryName === 'تحصيل'
+    return d.subCategoryName === 'مبيعات آجل' || d.mainCategoryName === 'تحصيل'
   }
 
   // ═══ v2.27.0 (15-Jun) — شرط تنشيط خلية الموظف ═══
@@ -711,603 +713,12 @@ export default function Daily() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
 
-      {/* ===== رأس الصفحة ===== */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-surface-600 flex-shrink-0 bg-surface-800">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-brand-600/20 border border-brand-600/30
-            flex items-center justify-center text-brand-400">
-            <Icons.Journal size={15} />
-          </div>
-          <div>
-            <div className="font-bold text-white text-sm">
-              شيفت #{activeShift.monthlyShiftNum} — {shiftTypeLabel(activeShift.type)}
-            </div>
-            <div className="text-2xs text-surface-400">
-              {fmtDate(activeShift.date)} &nbsp;|&nbsp; {activeShift.startTime}
-              &nbsp;|&nbsp; {activeShift.cashierName}
-              {journal && <span className="text-brand-400 mr-1">| {journal.journalNum}</span>}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {/* حالة */}
-          <span className={`badge badge-${activeShift.status} text-xs`}>
-            {statusLabel(activeShift.status)}
-          </span>
-          {/* ملخص مالي */}
-          <div className="hidden md:flex items-center gap-3 text-xs border-r border-surface-600 pr-3 mr-1">
-            <span className="text-success tabular-nums">+{fmt(totalIn)} ج</span>
-            <span className="text-danger tabular-nums">-{fmt(totalOut)} ج</span>
-          </div>
-        </div>
-      </div>
+      {/* ADR-012 v2 — الرأس وشريط التبويبات محذوفان؛ ShiftSheet يملأ المساحة من الأعلى */}
 
-      {/* ===== شريط التبويبات ===== */}
-      <div className="flex items-center gap-1 px-4 pt-2 flex-shrink-0 bg-surface-800 border-b border-surface-600">
-        {([
-          ['daily',    'جدول بنود اليومية', <Icons.Journal size={14} key="j" />],
-          ['fawry',    'تقفيل ماكينة فوري', <Icons.Fawry  size={14} key="f" />],
-          ...(activeShift.status === 'open' ? [['close', 'حسابات إغلاق الشيفت', <Icons.Lock size={14} key="c" />]] : []),
-        ] as [typeof tab, string, React.ReactNode][]).map(([id, label, icon]) => {
-          const active = tab === id
-          return (
-            <button key={id} onClick={() => setTab(id)}
-              className="flex items-center gap-2 px-4 py-2 rounded-t-lg transition-all relative"
-              style={{
-                fontSize: '14px', fontWeight: active ? 700 : 600,
-                color: active ? '#d4a017' : 'var(--txt-2)',
-                background: active ? 'rgba(212,160,23,0.1)' : 'transparent',
-                borderBottom: active ? '2px solid #d4a017' : '2px solid transparent',
-                marginBottom: '-1px',
-              }}>
-              {icon}{label}
-            </button>
-          )
-        })}
-      </div>
-
-      {/* ═══════ تبويب: الخزينة ═══════ */}
-
-      {/* ═══════ تبويب: جدول بنود اليومية (v2.27.0) ═══════ */}
-      {tab === 'daily' && (
-      <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
-
-        {/* رأس + إجماليات حية */}
-        <div className="flex items-center justify-between flex-shrink-0 flex-wrap gap-2">
-          <div className="flex items-center gap-2">
-            <Icons.Journal size={16} style={{ color: 'var(--accent)' }} />
-            <span className="font-bold text-base" style={{ color: 'var(--txt-1)' }}>
-              جدول بنود اليومية
-            </span>
-            <span className="text-2xs px-2 py-0.5 rounded-md" style={{
-              background: 'rgba(59,130,246,0.12)', color: 'var(--accent)',
-              border: '1px solid rgba(59,130,246,0.25)',
-            }}>
-              الخطوة 1 من 3
-            </span>
-            <span className="text-2xs px-2 py-0.5 rounded-md" style={{
-              background: 'var(--inner-bg)', color: 'var(--txt-3)',
-              border: '1px solid var(--inner-border)',
-            }}>
-              {drafts.filter(d => !isRowEmpty(d)).length} بند مملوء من {drafts.length}
-            </span>
-          </div>
-          <div className="flex items-center gap-3 text-xs">
-            <span className="tabular-nums" style={{ color: '#22c55e' }}>
-              + {fmt(drafts.reduce((s, d) => s + d.amountIn, 0))} ج
-            </span>
-            <span className="tabular-nums" style={{ color: '#ef4444' }}>
-              − {fmt(drafts.reduce((s, d) => s + d.amountOut, 0))} ج
-            </span>
-          </div>
-        </div>
-
-        {/* جدول الإدخال المباشر */}
-        <div className="card flex-1 flex flex-col overflow-hidden p-0">
-          <div className="overflow-auto flex-1">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 z-10">
-                <tr>
-                  <th className="th" style={{ width: 40 }}>#</th>
-                  <th className="th" style={{ minWidth: 160 }}>البيان</th>
-                  <th className="th" style={{ minWidth: 120 }}>التصنيف الرئيسي</th>
-                  <th className="th" style={{ minWidth: 110 }}>التصنيف الفرعي</th>
-                  <th className="th" style={{ minWidth: 95, color: '#22c55e' }}>وارد (ج)</th>
-                  <th className="th" style={{ minWidth: 95, color: '#ef4444' }}>منصرف (ج)</th>
-                  <th className="th" style={{ minWidth: 105 }}>طريقة الدفع</th>
-                  <th className="th" style={{ minWidth: 130, color: '#06b6d4' }}>اسم العميل</th>
-                  <th className="th" style={{ minWidth: 110 }}>موظف</th>
-                  <th className="th" style={{ width: 40 }}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {drafts.map((d, idx) => {
-                  const empty = isRowEmpty(d)
-                  const filledSubsForRow = subCats.filter(s => s.mainCategoryId === d.mainCategoryId)
-                  // الترقيم: يأخذ رقماً فقط عند الملء
-                  const rowNumber = empty ? '' : String(
-                    drafts.slice(0, idx + 1).filter(r => !isRowEmpty(r)).length
-                  )
-                  return (
-                    <tr key={d.localId} className="tr"
-                      style={empty ? { opacity: 0.65 } : { background: 'rgba(34,197,94,0.04)' }}>
-                      <td className="td text-center tabular-nums font-bold"
-                        style={{ color: empty ? 'var(--txt-3)' : 'var(--accent)' }}>
-                        {rowNumber}
-                      </td>
-                      <td className="td p-1">
-                        <input type="text"
-                          value={d.description}
-                          onChange={e => updateRow(d.localId, { description: e.target.value })}
-                          placeholder="اكتب البيان..."
-                          disabled={activeShift.status !== 'open'}
-                          className="field text-xs w-full"
-                          style={{ padding: '4px 8px' }} />
-                      </td>
-                      <td className="td p-1">
-                        <select
-                          value={d.mainCategoryId ?? ''}
-                          onChange={e => updateRow(d.localId, { mainCategoryId: e.target.value ? +e.target.value : null })}
-                          disabled={activeShift.status !== 'open'}
-                          className="field text-xs w-full"
-                          style={{ padding: '4px 6px' }}>
-                          <option value="">—</option>
-                          {mainCats.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                      </td>
-                      <td className="td p-1">
-                        <select
-                          value={d.subCategoryId ?? ''}
-                          onChange={e => updateRow(d.localId, { subCategoryId: e.target.value ? +e.target.value : null })}
-                          disabled={activeShift.status !== 'open' || !d.mainCategoryId}
-                          className="field text-xs w-full"
-                          style={{ padding: '4px 6px' }}>
-                          <option value="">—</option>
-                          {filledSubsForRow.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-                        </select>
-                      </td>
-                      <td className="td p-1">
-                        <input type="number" min={0}
-                          value={d.amountIn ? d.amountIn / 100 : ''}
-                          onChange={e => updateRow(d.localId, { amountIn: parsePias(e.target.value || '0') })}
-                          placeholder={isAmountInEnabled(d) ? '0.00' : '🔒'}
-                          disabled={activeShift.status !== 'open' || !isAmountInEnabled(d)}
-                          title={!isAmountInEnabled(d) ? 'الوارد متاح فقط للتصنيف "تحصيل" أو الفرعي "مرتجع مشتريات"' : ''}
-                          className="field text-xs w-full tabular-nums"
-                          style={{
-                            padding: '4px 8px',
-                            color: isAmountInEnabled(d) ? '#22c55e' : 'var(--txt-3)',
-                            opacity: isAmountInEnabled(d) ? 1 : 0.5,
-                          }} />
-                      </td>
-                      <td className="td p-1">
-                        <input type="number" min={0}
-                          value={d.amountOut ? d.amountOut / 100 : ''}
-                          onChange={e => updateRow(d.localId, { amountOut: parsePias(e.target.value || '0') })}
-                          placeholder="0.00"
-                          disabled={activeShift.status !== 'open'}
-                          className="field text-xs w-full tabular-nums"
-                          style={{ padding: '4px 8px', color: '#ef4444' }} />
-                      </td>
-                      <td className="td p-1">
-                        <select
-                          value={d.payMethod}
-                          onChange={e => updateRow(d.localId, { payMethod: e.target.value as PayMethod })}
-                          disabled={activeShift.status !== 'open'}
-                          className="field text-xs w-full"
-                          style={{ padding: '4px 6px' }}>
-                          {(Object.keys(PAY_LABELS) as PayMethod[]).map(pm => (
-                            <option key={pm} value={pm}>{PAY_LABELS[pm]}</option>
-                          ))}
-                        </select>
-                      </td>
-                      {/* v2.27.0 — خلية العميل (نشطة حسب الشروط) */}
-                      <td className="td p-1">
-                        <select
-                          value={d.customerId ?? ''}
-                          onChange={e => updateRow(d.localId, { customerId: e.target.value ? +e.target.value : null })}
-                          disabled={activeShift.status !== 'open' || !isCustomerEnabled(d)}
-                          title={!isCustomerEnabled(d)
-                            ? 'العميل متاح فقط عند الدفع الآجل أو التحصيل'
-                            : d.customerId ? '' : 'مطلوب — اختر العميل'}
-                          className="field text-xs w-full"
-                          style={{
-                            padding: '4px 6px',
-                            opacity: isCustomerEnabled(d) ? 1 : 0.45,
-                            color: isCustomerEnabled(d) ? (d.customerId ? '#06b6d4' : '#ef4444') : 'var(--txt-3)',
-                            borderColor: isCustomerEnabled(d)
-                              ? (d.customerId ? '#06b6d4aa' : '#ef4444aa')
-                              : undefined,
-                            fontWeight: 600,
-                          }}>
-                          <option value="">{isCustomerEnabled(d) ? '— اختر —' : '🔒'}</option>
-                          {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                        </select>
-                      </td>
-                      <td className="td p-1">
-                        <select
-                          value={d.employeeId ?? ''}
-                          onChange={e => updateRow(d.localId, { employeeId: e.target.value ? +e.target.value : null })}
-                          disabled={activeShift.status !== 'open' || !isEmployeeEnabled(d)}
-                          title={!isEmployeeEnabled(d) ? 'الموظف متاح فقط للتصنيف "أجور" أو "راتب شهري"' : ''}
-                          className="field text-xs w-full"
-                          style={{
-                            padding: '4px 6px',
-                            opacity: isEmployeeEnabled(d) ? 1 : 0.45,
-                            color: isEmployeeEnabled(d) ? (d.employeeId ? '#f59e0b' : 'var(--txt-1)') : 'var(--txt-3)',
-                            borderColor: isEmployeeEnabled(d) ? (d.employeeId ? '#f59e0baa' : undefined) : undefined,
-                          }}>
-                          <option value="">{isEmployeeEnabled(d) ? '— اختر —' : '🔒'}</option>
-                          {employees.map(em => <option key={em.id} value={em.id}>{em.name}</option>)}
-                        </select>
-                      </td>
-                      <td className="td p-1 text-center">
-                        {!empty && activeShift.status === 'open' && (
-                          <button onClick={() => removeRow(d.localId)}
-                            className="p-1 rounded hover:bg-white/10 hover:text-danger transition-colors"
-                            style={{ color: 'var(--txt-3)' }}
-                            title="حذف الصف">
-                            <Icons.Trash size={12} />
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* شريط الأزرار السفلي */}
-          {activeShift.status === 'open' && (
-            <div className="flex items-center justify-between gap-2 px-4 py-3"
-              style={{ borderTop: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-              <button onClick={addRow} className="btn-ghost btn-sm">
-                <Icons.Plus size={14} /> إضافة بيان
-              </button>
-              <button
-                onClick={handleSaveAndNext}
-                disabled={submittingAll}
-                className="btn-success-pro"
-                style={{ fontSize: 13, padding: '8px 22px' }}>
-                {submittingAll
-                  ? <><Icons.Refresh size={14} className="animate-spin" /> جاري الحفظ...</>
-                  : <><Icons.Save size={14} /> حفظ والتالي ← ماكينة فوري</>
-                }
-              </button>
-            </div>
-          )}
-        </div>
-
-      </div>
-      )}
-
-      {/* ═══════ تبويب: ماكينة فوري — v2.27.0 جدول احترافي ═══════ */}
-      {tab === 'fawry' && (
-        <div className="flex-1 overflow-y-auto p-4">
-        <div className="max-w-6xl mx-auto">
-        <div className="flex items-center gap-2 mb-4">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-            style={{ background: 'rgba(139,92,246,0.18)', color: '#8b5cf6' }}>
-            <Icons.Fawry size={18} />
-          </div>
-          <div>
-            <div style={{ fontSize: '15px', fontWeight: 800, color: 'var(--txt-1)' }}>
-              بيانات ماكينة فوري
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>
-              أدخل أرقام الاستلام والتسليم — المبيعات تُحسب تلقائياً
-            </div>
-          </div>
-          <span className="text-2xs px-2 py-0.5 rounded-md mr-auto" style={{
-            background: 'rgba(59,130,246,0.12)', color: 'var(--accent)',
-            border: '1px solid rgba(59,130,246,0.25)',
-          }}>الخطوة 2 من 3</span>
-        </div>
-
-        {/* ═══ الجدول الرئيسي: 3 فئات × 3 صفوف (استلام/تسليم/مبيعات) ═══ */}
-        {(() => {
-          const cats = [
-            { id: 'basic',   label: 'أساسي',     color: '#3b82f6', icon: '📱' },
-            { id: 'air',     label: 'إير تايم',  color: '#8b5cf6', icon: '📡' },
-            { id: 'cashout', label: 'كاش أوت',   color: '#f59e0b', icon: '💵' },
-          ] as const
-
-          // حسابات المبيعات اللحظية
-          const basicSales   = parsePias(fawryForm.basicReceive)   - parsePias(fawryForm.basicDeliver)
-                             + parsePias(fawryForm.cashoutToBasic) + parsePias(fawryForm.fawryToBasic)
-          const airSales     = parsePias(fawryForm.airReceive)     - parsePias(fawryForm.airDeliver)
-                             + parsePias(fawryForm.cashoutToAir)   + parsePias(fawryForm.fawryToAir)
-          const cashoutSales = parsePias(fawryForm.cashoutDeliver) - parsePias(fawryForm.cashoutReceive)
-          const salesMap     = { basic: basicSales, air: airSales, cashout: cashoutSales }
-
-          return (
-            <div className="card p-0 overflow-hidden mb-4">
-              <table className="w-full">
-                {/* رأس: أعمدة الفئات */}
-                <thead>
-                  <tr style={{ background: 'var(--inner-bg)' }}>
-                    <th className="th text-right" style={{ width: 130, color: 'var(--txt-2)' }}>
-                      الحركة ↓
-                    </th>
-                    {cats.map(c => (
-                      <th key={c.id} className="th text-center" style={{ color: c.color }}>
-                        <div className="flex items-center justify-center gap-1.5">
-                          <span style={{ fontSize: 14 }}>{c.icon}</span>
-                          <span style={{ fontSize: 13, fontWeight: 800 }}>{c.label}</span>
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {/* صف الاستلام */}
-                  <tr style={{ borderTop: '1px solid var(--inner-border)' }}>
-                    <td className="td font-bold py-3" style={{ color: '#22c55e', background: 'rgba(34,197,94,0.04)' }}>
-                      <div className="flex items-center gap-2">
-                        <span style={{
-                          width: 4, height: 24, borderRadius: 2, background: '#22c55e',
-                        }} />
-                        ⬇ استلام
-                      </div>
-                    </td>
-                    {cats.map(c => (
-                      <td key={c.id} className="td p-2">
-                        <input type="number" min={0}
-                          value={fawryForm[`${c.id}Receive` as keyof typeof fawryForm]}
-                          readOnly={activeShift.status !== 'open'}
-                          onChange={e => setFawryForm(f => ({ ...f, [`${c.id}Receive`]: e.target.value }))}
-                          className="field text-sm font-bold tabular-nums text-center"
-                          style={{ borderColor: c.color + '55', color: c.color }} />
-                      </td>
-                    ))}
-                  </tr>
-                  {/* صف التسليم */}
-                  <tr style={{ borderTop: '1px solid var(--inner-border)' }}>
-                    <td className="td font-bold py-3" style={{ color: '#ef4444', background: 'rgba(239,68,68,0.04)' }}>
-                      <div className="flex items-center gap-2">
-                        <span style={{
-                          width: 4, height: 24, borderRadius: 2, background: '#ef4444',
-                        }} />
-                        ⬆ تسليم
-                      </div>
-                    </td>
-                    {cats.map(c => (
-                      <td key={c.id} className="td p-2">
-                        <input type="number" min={0}
-                          value={fawryForm[`${c.id}Deliver` as keyof typeof fawryForm]}
-                          readOnly={activeShift.status !== 'open'}
-                          onChange={e => setFawryForm(f => ({ ...f, [`${c.id}Deliver`]: e.target.value }))}
-                          className="field text-sm font-bold tabular-nums text-center"
-                          style={{ borderColor: '#ef444455', color: '#ef4444' }} />
-                      </td>
-                    ))}
-                  </tr>
-                  {/* صف المبيعات (محسوبة) */}
-                  <tr style={{ borderTop: '2px solid var(--inner-border)',
-                               background: 'linear-gradient(135deg, rgba(59,130,246,0.06), rgba(139,92,246,0.04))' }}>
-                    <td className="td font-bold py-3.5" style={{ color: 'var(--accent)' }}>
-                      <div className="flex items-center gap-2">
-                        <span style={{
-                          width: 4, height: 24, borderRadius: 2, background: 'var(--accent)',
-                        }} />
-                        ✨ المبيعات
-                      </div>
-                    </td>
-                    {cats.map(c => {
-                      const v = salesMap[c.id]
-                      const positive = v >= 0
-                      const valColor = positive ? c.color : '#ef4444'
-                      return (
-                        <td key={c.id} className="td text-center py-3.5">
-                          <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg"
-                            style={{
-                              background: valColor + '15',
-                              border: `1.5px solid ${valColor}50`,
-                            }}>
-                            <span className="tabular-nums" style={{
-                              fontSize: 15, fontWeight: 900, color: valColor,
-                            }}>
-                              {fmt(v)}
-                            </span>
-                            <span style={{ fontSize: 10, color: valColor, opacity: 0.8 }}>ج</span>
-                          </div>
-                        </td>
-                      )
-                    })}
-                  </tr>
-                </tbody>
-              </table>
-              {/* شريط شرح المعادلات */}
-              <div className="px-4 py-2 flex items-center gap-4 text-2xs flex-wrap"
-                style={{ background: 'var(--inner-bg)', borderTop: '1px solid var(--inner-border)', color: 'var(--txt-3)' }}>
-                <span><b>أساسي/إير:</b> استلام − تسليم + تحويلات</span>
-                <span>·</span>
-                <span><b>كاش أوت:</b> تسليم − استلام</span>
-              </div>
-            </div>
-          )
-        })()}
-
-        {/* ═══ التحويلات + البرنامج والبونات في صف واحد ═══ */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mb-4">
-          {/* التحويلات */}
-          <div className="card p-3">
-            <div className="flex items-center gap-2 mb-3">
-              <span style={{ fontSize: 14 }}>🔄</span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>
-                التحويلات الداخلية
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              {([
-                ['fawryToBasic',   'فوري → أساسي'],
-                ['fawryToAir',     'فوري → إير تايم'],
-                ['cashoutToBasic', 'كاش أوت → أساسي'],
-                ['cashoutToAir',   'كاش أوت → إير تايم'],
-              ] as [keyof typeof fawryForm, string][]).map(([key, label]) => (
-                <div key={key}>
-                  <label className="block text-2xs mb-1" style={{ color: 'var(--txt-3)' }}>{label}</label>
-                  <input className="field text-sm font-bold tabular-nums" type="number" min={0}
-                    value={fawryForm[key]} readOnly={activeShift.status !== 'open'}
-                    onChange={e => setFawryForm(f => ({ ...f, [key]: e.target.value }))} />
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* البرنامج والبونات */}
-          <div className="card p-3">
-            <div className="flex items-center gap-2 mb-3">
-              <span style={{ fontSize: 14 }}>📋</span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>
-                البرنامج والبونات
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-2.5">
-              {([
-                ['programSales', 'مبيعات فوري الفعلية', '#22c55e'],
-                ['firstVoucher', 'أول بون',             '#06b6d4'],
-                ['lastVoucher',  'آخر بون',             '#06b6d4'],
-              ] as [keyof typeof fawryForm, string, string][]).map(([key, label, clr]) => (
-                <div key={key}>
-                  <label className="block text-2xs mb-1" style={{ color: clr, fontWeight: 600 }}>{label}</label>
-                  <input className="field text-sm font-bold tabular-nums" type="number" min={0}
-                    value={fawryForm[key]} readOnly={activeShift.status !== 'open'}
-                    style={{ borderColor: clr + '40' }}
-                    onChange={e => setFawryForm(f => ({ ...f, [key]: e.target.value }))} />
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-          {/* ===== ملخص فوري (محسوب لحظياً من النموذج) ===== */}
-          {(() => {
-            // مبيعات فيزا = بنود اليومية (فيزا + تصنيف فرعي "مبيعات فيزا") — من العمودين
-            const visaSales = liveTxs
-              .filter(t => t.payMethod === 'visa' && t.subCategoryName === 'مبيعات فيزا')
-              .reduce((s, t) => s + t.amountIn + t.amountOut, 0)
-
-            // حساب لحظي من قيم النموذج (بدون انتظار الحفظ)
-            const basicLive = parsePias(fawryForm.basicReceive) - parsePias(fawryForm.basicDeliver)
-                            + parsePias(fawryForm.cashoutToBasic) + parsePias(fawryForm.fawryToBasic)
-            const airLive   = parsePias(fawryForm.airReceive) - parsePias(fawryForm.airDeliver)
-                            + parsePias(fawryForm.cashoutToAir) + parsePias(fawryForm.fawryToAir)
-            const totalLive = basicLive + airLive
-            const profitLive = parsePias(fawryForm.programSales) - basicLive - airLive
-            const opsLive   = Math.max(0, (parseInt(fawryForm.lastVoucher) || 0) - (parseInt(fawryForm.firstVoucher) || 0))
-
-            // كاش أوت والعمولة
-            const coReceive = parsePias(fawryForm.cashoutReceive)
-            const coDeliver = parsePias(fawryForm.cashoutDeliver)
-            const cashoutAddition = Math.max(0, coDeliver - coReceive)  // تسليم − استلام
-            const cashoutDiscount = Math.max(0, coReceive - coDeliver)  // استلام − تسليم (عند تسليم<استلام)
-            const commission   = visaSales - cashoutAddition            // عمولة فوري
-            const commissionPct = visaSales > 0 ? (commission / visaSales * 100) : 0
-
-            return (
-            <>
-            {/* ═══ شريط الكاش أوت والعمولة ═══ */}
-            <div className="card p-3 mb-3">
-              <div className="flex items-center gap-2 mb-2">
-                <span style={{ fontSize: 14 }}>💵</span>
-                <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>
-                  حسابات كاش أوت والعمولة
-                </span>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                {[
-                  { label: 'إضافة كاش أوت', value: cashoutAddition, color: '#22c55e', hint: 'تسليم − استلام' },
-                  { label: 'خصم كاش أوت',   value: cashoutDiscount, color: '#ef4444', hint: 'عند تسليم < استلام' },
-                  { label: 'عمولة فوري',    value: commission,      color: '#8b5cf6', hint: 'فيزا − إضافة' },
-                  { label: 'نسبة العمولة',  value: null,            color: '#06b6d4', hint: 'عمولة ÷ فيزا', special: `${commissionPct.toFixed(2)}%` },
-                ].map((it, i) => (
-                  <div key={i} className="rounded-xl p-2.5"
-                    style={{
-                      background: `linear-gradient(135deg, ${it.color}12, ${it.color}04)`,
-                      border: `1px solid ${it.color}40`,
-                    }}>
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-2xs font-semibold" style={{ color: it.color }}>{it.label}</span>
-                    </div>
-                    <div className="tabular-nums font-bold" style={{
-                      fontSize: 16, color: it.color, lineHeight: 1.1,
-                    }}>
-                      {it.special ?? `${fmt(it.value ?? 0)} ج`}
-                    </div>
-                    <div style={{ fontSize: 10, color: 'var(--txt-3)', marginTop: 2 }}>{it.hint}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* ═══ الملخص النهائي ═══ */}
-            <div className="card p-3"
-              style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.08), rgba(139,92,246,0.05))',
-                       border: '1.5px solid rgba(59,130,246,0.30)' }}>
-              <div className="flex items-center gap-2 mb-3">
-                <span style={{ fontSize: 14 }}>📊</span>
-                <span style={{ fontSize: 13, fontWeight: 800, color: 'var(--accent)' }}>
-                  ملخص فوري النهائي (لحظي)
-                </span>
-              </div>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-                <div className="rounded-xl p-2.5 text-center"
-                  style={{ background: 'rgba(59,130,246,0.15)', border: '1.5px solid rgba(59,130,246,0.45)' }}>
-                  <div className="text-2xs font-semibold mb-1" style={{ color: 'var(--accent)' }}>إجمالي مبيعات فوري</div>
-                  <div className="tabular-nums font-bold" style={{ fontSize: 17, color: 'var(--accent)' }}>
-                    {fmt(totalLive)} <span style={{ fontSize: 11 }}>ج</span>
-                  </div>
-                </div>
-                <div className="rounded-xl p-2.5 text-center"
-                  style={{ background: 'rgba(245,158,11,0.10)', border: '1px solid rgba(245,158,11,0.35)' }}>
-                  <div className="text-2xs font-semibold mb-1" style={{ color: '#f59e0b' }}>مبيعات فيزا</div>
-                  <div className="tabular-nums font-bold" style={{ fontSize: 17, color: '#f59e0b' }}>
-                    {fmt(visaSales)} <span style={{ fontSize: 11 }}>ج</span>
-                  </div>
-                </div>
-                <div className="rounded-xl p-2.5 text-center"
-                  style={{
-                    background: profitLive >= 0 ? 'rgba(34,197,94,0.10)' : 'rgba(239,68,68,0.10)',
-                    border: `1px solid ${profitLive >= 0 ? 'rgba(34,197,94,0.35)' : 'rgba(239,68,68,0.35)'}`,
-                  }}>
-                  <div className="text-2xs font-semibold mb-1"
-                    style={{ color: profitLive >= 0 ? '#22c55e' : '#ef4444' }}>ربحية فوري</div>
-                  <div className="tabular-nums font-bold" style={{
-                    fontSize: 17, color: profitLive >= 0 ? '#22c55e' : '#ef4444',
-                  }}>
-                    {fmt(profitLive)} <span style={{ fontSize: 11 }}>ج</span>
-                  </div>
-                </div>
-                <div className="rounded-xl p-2.5 text-center"
-                  style={{ background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.35)' }}>
-                  <div className="text-2xs font-semibold mb-1" style={{ color: '#8b5cf6' }}>عدد العمليات</div>
-                  <div className="tabular-nums font-bold" style={{ fontSize: 17, color: '#8b5cf6' }}>
-                    {opsLive}
-                  </div>
-                </div>
-              </div>
-            </div>
-            </>
-            )
-          })()}
-
-        {/* شريط wizard السفلي */}
-        {activeShift.status === 'open' && (
-          <div className="flex items-center justify-between mt-5 pt-4"
-            style={{ borderTop: '1px solid var(--inner-border)' }}>
-            <button onClick={() => setTab('daily')} className="btn-ghost btn-sm">
-              ← السابق (اليومية)
-            </button>
-            <button onClick={handleSaveFawryAndNext}
-              className="btn-success-pro"
-              style={{ fontSize: 13, padding: '8px 22px' }}>
-              <Icons.Save size={14} /> حفظ والتالي ← إغلاق الشيفت
-            </button>
-          </div>
-        )}
-        </div>
+      {/* ADR-012 — الورقة الموحّدة (تحلّ محل تبويبي اليومية وفوري) */}
+      {(tab === 'daily' || tab === 'fawry') && (
+        <div className="flex-1 overflow-hidden">
+          <ShiftSheet shiftId={activeShift.id} embedded onChanged={() => refreshAll(activeShift.id)} />
         </div>
       )}
 
@@ -1940,68 +1351,6 @@ export default function Daily() {
         <p className="text-sm" style={{ color: 'var(--txt-2)' }}>
           هل تريد حذف هذا البند من الشيفت؟ لا يمكن التراجع عن هذه العملية.
         </p>
-      </Modal>
-
-
-      {/* مودال فتح شيفت عند الضغط وهناك شيفت مفتوح (احتياطي) */}
-      <Modal open={openShiftModal} title="فتح شيفت جديد" onClose={() => setOpenShiftModal(false)}
-        footer={<>
-          <button onClick={() => setOpenShiftModal(false)} className="btn-ghost btn-sm">إلغاء</button>
-          <button onClick={handleOpenShift} disabled={creatingShift} className="btn-success btn-sm">
-            {creatingShift ? 'جاري الفتح...' : 'فتح الشيفت'}
-          </button>
-        </>}>
-        <div className="space-y-3">
-          {/* اسم الكاشير + نوع الشيفت — أعلى النافذة */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-surface-400 mb-1">اسم الكاشير</label>
-              <select className="field" value={shiftForm.cashierUserId || user?.id || ''}
-                onChange={e => setShiftForm(f => ({ ...f, cashierUserId: Number(e.target.value) }))}>
-                {shiftUsers.map(u => <option key={u.id} value={u.id}>{u.displayName}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs text-surface-400 mb-1">نوع الشيفت</label>
-              <div className="grid grid-cols-3 gap-1">
-                {(['morning', 'evening', 'between'] as const).map(t => {
-                  const active = shiftForm.type === t
-                  return (
-                    <button key={t} type="button" onClick={() => setShiftForm(f => ({ ...f, type: t }))}
-                      className="py-2 rounded-lg text-2xs font-bold transition-all border"
-                      style={active
-                        ? { background: 'var(--accent)', borderColor: 'var(--accent)', color: '#fff' }
-                        : { background: 'var(--inner-bg)', borderColor: 'var(--inner-border)', color: 'var(--txt-1)' }}>
-                      {shiftTypeLabel(t)}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs text-surface-400 mb-1">التاريخ</label>
-              <input className="field" type="date" value={shiftForm.date}
-                onChange={e => setShiftForm(f => ({ ...f, date: e.target.value }))} />
-            </div>
-            <div>
-              <label className="block text-xs text-surface-400 mb-1">وقت البداية</label>
-              <input className="field" type="time" value={shiftForm.startTime}
-                onChange={e => setShiftForm(f => ({ ...f, startTime: e.target.value }))} />
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs text-surface-400 mb-1">رصيد البداية (جنيه)</label>
-            <input className="field" type="number" placeholder="0.00" value={shiftForm.openingBalance}
-              onChange={e => setShiftForm(f => ({ ...f, openingBalance: e.target.value }))} />
-          </div>
-          <div>
-            <label className="block text-xs text-surface-400 mb-1">ملاحظة</label>
-            <input className="field" placeholder="اختياري" value={shiftForm.note}
-              onChange={e => setShiftForm(f => ({ ...f, note: e.target.value }))} />
-          </div>
-        </div>
       </Modal>
 
       {/* ═══════ v2.27.0 (14-Jun) — Modal تحذير البنود الناقصة ═══════ */}

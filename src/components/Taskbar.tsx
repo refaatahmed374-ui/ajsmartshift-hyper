@@ -10,6 +10,7 @@ import { useLicense } from '../store/license'
 import { api, call } from '../lib/api'
 import { fmt } from '../lib/format'
 import Icons from './Icon'
+import { APP_VERSION } from '../version'
 
 const DAY = 86400000
 
@@ -54,12 +55,17 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
 
   // أيام الاشتراك المتبقية
   let subDays: number | null = null, subColor = '#2ea043'
-  if (license) {
-    if (license.mode === 'subscription' && license.subExpireDate) subDays = Math.max(0, Math.ceil((new Date(license.subExpireDate).getTime() - Date.now()) / DAY))
-    else if (license.mode === 'transition') subDays = license.transitionDaysLeft
-    else if (license.state === 'trial') subDays = license.daysLeft
-    if (subDays !== null && subDays <= 7) subColor = '#f59e0b'
-    if (subDays !== null && subDays <= 0) subColor = '#f85149'
+  if (license?.mode === 'subscription' && license.subExpireDate) {
+    subDays = Math.max(0, Math.ceil((new Date(license.subExpireDate).getTime() - Date.now()) / DAY))
+  } else if (license?.mode === 'transition') {
+    subDays = license.transitionDaysLeft
+  } else if (license?.state === 'trial') {
+    subDays = license.daysLeft
+  }
+
+  if (subDays !== null) {
+    if (subDays <= 0) subColor = '#f85149'
+    else if (subDays <= 7) subColor = '#f59e0b'
   }
 
   // اختصارات الصفحات
@@ -71,12 +77,12 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
     { id: 'employees', label: 'الموظفون', icon: <Icons.Employees size={15} /> },
   ]
 
-  const sep = <span style={{ opacity: .25 }}>|</span>
+  const sep = <span style={{ opacity: .35, color: 'var(--statusbar-text)' }}>|</span>
   const chip = (color: string) => ({ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 9px', borderRadius: 8, background: color + '1a', border: `1px solid ${color}33`, color, fontWeight: 700, fontSize: 11.5 } as const)
 
   return (
     <div className="aj-statusbar flex items-center gap-2 px-3 flex-shrink-0 select-none overflow-x-auto"
-      style={{ height: 44, fontSize: 12, fontWeight: 500, borderTop: '1px solid var(--inner-border)' }}>
+      style={{ height: 44, fontSize: 12, fontWeight: 500, borderTop: '1px solid var(--statusbar-border)' }}>
 
       {/* اختصارات الصفحات */}
       <div className="flex items-center gap-1">
@@ -85,7 +91,7 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
             className="flex items-center gap-1.5 rounded-lg transition-all"
             style={{
               padding: '5px 10px', fontSize: 12, fontWeight: current === s.id ? 800 : 600,
-              color: current === s.id ? 'var(--accent)' : 'var(--txt-2)',
+              color: current === s.id ? 'var(--accent)' : 'var(--statusbar-text)',
               background: current === s.id ? 'rgba(59,130,246,0.14)' : 'transparent',
             }}>
             {s.icon}<span className="hidden md:inline">{s.label}</span>
@@ -123,7 +129,7 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
 
       {/* التنبيهات */}
       <button onClick={() => { onNavigate('settings'); try { window.api.taskbar.stopFlash() } catch { /* */ } }}
-        title="التنبيهات" className="relative flex items-center" style={{ padding: '4px 6px', color: 'var(--txt-2)' }}>
+        title="التنبيهات" className="relative flex items-center" style={{ padding: '4px 6px', color: 'var(--statusbar-text)' }}>
         <Icons.Bell size={16} />
         {unread > 0 && (
           <span style={{ position: 'absolute', top: -2, insetInlineStart: -2, minWidth: 15, height: 15, padding: '0 3px',
@@ -139,7 +145,7 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
 
       {/* النسخ الاحتياطية */}
       {backups !== null && (
-        <span className="hidden lg:inline-flex items-center gap-1" style={{ color: 'var(--txt-3)', fontSize: 11 }} title="عدد النسخ الاحتياطية">
+        <span className="hidden lg:inline-flex items-center gap-1" style={{ color: 'var(--statusbar-text)', fontSize: 11, opacity: 0.8 }} title="عدد النسخ الاحتياطية">
           <Icons.Backup size={12} />{backups}
         </span>
       )}
@@ -148,7 +154,7 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
 
       {/* المستخدم */}
       {user && (
-        <span className="flex items-center gap-1" style={{ color: 'var(--txt-2)' }}>
+        <span className="flex items-center gap-1" style={{ color: 'var(--statusbar-text)' }}>
           <Icons.User size={12} />{user.displayName}
         </span>
       )}
@@ -156,12 +162,12 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
       {sep}
 
       {/* الساعة */}
-      <span className="flex items-center gap-1 tabular-nums" style={{ color: 'var(--txt-2)' }}>
+      <span className="flex items-center gap-1 tabular-nums" style={{ color: 'var(--statusbar-text)' }}>
         <Icons.Clock size={12} />{time}
       </span>
 
       {sep}
-      <span style={{ color: 'var(--accent)', fontWeight: 700 }}>v2.31.0</span>
+      <span style={{ color: 'var(--accent)', fontWeight: 700 }}>v{APP_VERSION}</span>
     </div>
   )
 }

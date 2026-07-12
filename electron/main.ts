@@ -1,7 +1,8 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
-import { join } from 'path'
+import { join, basename } from 'path'
+import ExcelJS from 'exceljs'
 import { existsSync, mkdirSync, copyFileSync } from 'fs'
 import { getDb, closeDb, wipeData } from './database/index'
 import * as UserRepo   from './database/repositories/users'
@@ -17,6 +18,8 @@ import * as StatsRepo    from './database/repositories/stats'
 import * as PartyRepo    from './database/repositories/parties'
 import * as BackupRepo from './database/repositories/backups'
 import { backupsDir } from './paths'
+import { analyze as excelAnalyze, runImport as excelRunImport } from './services/excelImport/pipeline'
+import type { ImportOptions, ImportErrorRecord } from './services/excelImport/pipeline'
 import type { IpcResult } from '../core/types'
 
 // ===== النافذة الرئيسية =====
@@ -43,9 +46,18 @@ function createWindow(): void {
 
   if (process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    mainWindow.webContents.openDevTools({ mode: 'detach' }) // وضع التطوير — لإظهار أخطاء الواجهة فوراً
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+
+  // أي خطأ يمنع تحميل الصفحة (شاشة بيضاء) يُطبع في الطرفية بدل الفشل الصامت
+  mainWindow.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[did-fail-load] ${code} ${desc} — ${url}`)
+  })
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error('[render-process-gone]', details)
+  })
 
   mainWindow.once('ready-to-show', () => mainWindow!.show())
   mainWindow.on('closed', () => { mainWindow = null })
@@ -146,44 +158,25 @@ handle('shifts:getActive',      (db)       => ShiftRepo.getActiveShift(db))
 handle('shifts:updateStatus',   (db, id, s, uid) => ShiftRepo.updateShiftStatus(db, id as number, s as 'open'|'review'|'approved', uid as number))
 handle('shifts:updateNote',     (db, id, note)   => ShiftRepo.updateShiftNote(db, id as number, note as string))
 handle('shifts:updateOpening',  (db, id, bal)    => ShiftRepo.updateShiftOpeningBalance(db, id as number, bal as number))
+handle('shifts:updateCloseInputs', (db, id, data) => ShiftRepo.updateShiftCloseInputs(db, id as number, data as Parameters<typeof ShiftRepo.updateShiftCloseInputs>[2]))
+handle('shifts:updateMeta',     (db, id, data) => ShiftRepo.updateShiftMeta(db, id as number, data as Parameters<typeof ShiftRepo.updateShiftMeta>[2]))
 handle('shifts:delete',         (db, id)         => ShiftRepo.deleteShift(db, id as number))
 handle('shifts:close',          (db, id, cash, posSales, cashierRemaining) => {
-  const result = ShiftRepo.closeShift(db, id as number, cash as number, (posSales as number) ?? 0, (cashierRemaining as number) ?? 0)
-  // توليد تنبيه تلقائي إذا كان هناك عجز أو أوفر
-  try {
-    const thresholdRow = db.prepare(`SELECT value FROM settings WHERE key='alert_threshold'`).get() as { value: string } | undefined
-    const threshold = thresholdRow ? parseInt(thresholdRow.value) : 50000  // 500 ج افتراضي
-    const shift = ShiftRepo.getShiftById(db, id as number)
-    if (shift?.closingBalance !== null && shift?.closingBalance !== undefined) {
-      const txRow = db.prepare(`SELECT COALESCE(SUM(amount_in),0) as tin, COALESCE(SUM(amount_out),0) as tout FROM transactions WHERE shift_id=?`).get(id) as { tin: number; tout: number }
-      const expected = (shift.openingBalance || 0) + (txRow.tin || 0) - (txRow.tout || 0)
-      const diff = shift.closingBalance - expected
-      const absDiff = Math.abs(diff)
-      if (absDiff >= threshold) {
-        const type = diff < 0 ? 'deficit' : 'surplus'
-        const label = diff < 0 ? 'عجز' : 'أوفر'
-        const diffFmt = (absDiff / 100).toFixed(2)
-        NotifRepo.createNotification(db, {
-          type,
-          title: `${label} في شيفت #${shift.monthlyShiftNum}`,
-          message: `تم رصد ${label} بمقدار ${diffFmt} ج في شيفت ${shift.cashierName}`,
-          shiftId: shift.id,
-        })
-      }
-    }
-    // v2.27.0 — تم حذف تنبيه الاعتماد (نظام المراجعة محذوف، الشيفت يُغلق نهائياً)
-  } catch (e) {
-    console.error('Auto-notif error:', e)
-  }
-  return result
+  // v2.31.3 — إصلاح: تم تمرير `expectedCash` بدلاً من `cashierRemaining` كـ `actualCash`.
+  // الآن `cash` هو `cashierRemaining` الفعلي.
+  // تم حذف منطق التنبيهات القديم من هنا، حيث لا يُستخدم.
+  return ShiftRepo.closeShift(db, id as number, cash as number, (posSales as number) ?? 0, (cashierRemaining as number) ?? 0)
 })
 
 // ===== فوري =====
 handle('fawry:get',             (db, sid)  => ShiftRepo.getFawry(db, sid as number))
+handle('fawry:closingMonth',    (db, month) => ShiftRepo.getFawryClosingMonth(db, month as string))
+handle('fawry:allClosing',      (db)        => ShiftRepo.getAllFawryClosing(db))
 handle('fawry:update',          (db, sid, data) => ShiftRepo.updateFawry(db, sid as number, data as Parameters<typeof ShiftRepo.updateFawry>[2]))
 
 // ===== العهدة =====
 handle('custody:get',           (db, sid)  => ShiftRepo.getCustody(db, sid as number))
+handle('custody:getByShiftIds', (db, sids) => ShiftRepo.getCustodyByShiftIds(db, sids as number[]))
 handle('custody:update',        (db, sid, data) => ShiftRepo.updateCustody(db, sid as number, data as Parameters<typeof ShiftRepo.updateCustody>[2]))
 
 // ===== اليومية =====
@@ -191,6 +184,7 @@ handle('journal:getByShift',    (db, sid)  => ShiftRepo.getJournalByShift(db, si
 
 // ===== البنود =====
 handle('tx:getByShift',         (db, sid)  => TxRepo.getTransactionsByShift(db, sid as number))
+handle('tx:getByShiftIds',      (db, sids) => TxRepo.getTransactionsByShiftIds(db, sids as number[]))
 handle('tx:add',                (db, data) => TxRepo.addTransaction(db, data as Parameters<typeof TxRepo.addTransaction>[1]))
 handle('tx:addBatch',           (db, items) => TxRepo.addTransactionsBatch(db, items as Parameters<typeof TxRepo.addTransactionsBatch>[1]))
 handle('tx:update',             (db, id, data) => TxRepo.updateTransaction(db, id as number, data as Parameters<typeof TxRepo.updateTransaction>[2]))
@@ -291,6 +285,17 @@ handle('party:addPoints', (db, id, pts)  => PartyRepo.addLoyaltyPoints(db, id as
 handle('backup:list',        (db)        => BackupRepo.listBackups())
 handle('backup:create',      (db)        => BackupRepo.createBackup(db))
 handle('backup:delete',      (_db, path) => BackupRepo.deleteBackup(path as string))
+// استعادة نسخة احتياطية: تُكتب فوراً على ملف القاعدة الحيّ، ثم يُعاد تشغيل التطبيق ليقرأها من جديد
+ipcMain.handle('backup:restore', async (_e, backupPath) => {
+  try {
+    const db = getDb()
+    closeDb()
+    BackupRepo.restoreBackup(db, backupPath as string)
+    app.relaunch()
+    app.exit(0)
+    return ok(null)
+  } catch (e) { return err((e as Error).message) }
+})
 // محو البيانات (محاسبية فقط / إعادة ضبط كاملة)
 handle('data:wipe',          (_db, scope) => { wipeData(scope as 'accounting' | 'all'); return true })
 // v2.27.0 (14-Jun) — فحص الذاكرة + تنظيف القديم + معلومات النظام
@@ -305,6 +310,49 @@ handle('system:info',        ()          => ({
   arch: process.arch,
 }))
 ipcMain.handle('system:openExternal', (_e, url) => { shell.openExternal(url as string); return ok(true) })
+
+// ===== استيراد اليومية من Excel =====
+// تحليل: اختيار ملف + قراءة + معاينة (بلا إدراج)
+ipcMain.handle('excel:analyze', async () => {
+  try {
+    const res = await dialog.showOpenDialog(mainWindow!, {
+      title: 'اختر ملف Excel لاستيراد اليومية',
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+      properties: ['openFile'],
+    })
+    if (res.canceled || !res.filePaths[0]) return ok({ canceled: true })
+    const filePath = res.filePaths[0]
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.readFile(filePath)
+    const analysis = excelAnalyze(getDb(), wb, basename(filePath))
+    return ok({ canceled: false, filePath, fileName: basename(filePath), analysis })
+  } catch (e) { return err((e as Error).message) }
+})
+// الاستيراد الفعلي بعد تأكيد التعيينات
+ipcMain.handle('excel:import', async (_e, filePath, options) => {
+  try {
+    const wb = new ExcelJS.Workbook()
+    await wb.xlsx.readFile(filePath as string)
+    const report = excelRunImport(getDb(), wb, options as ImportOptions)
+    return ok(report)
+  } catch (e) { return err((e as Error).message) }
+})
+// تصدير سجل الأخطاء إلى Excel
+ipcMain.handle('excel:exportErrors', async (_e, errors) => {
+  try {
+    const res = await dialog.showSaveDialog(mainWindow!, {
+      title: 'حفظ سجل الأخطاء', defaultPath: 'import-errors.xlsx',
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+    })
+    if (res.canceled || !res.filePath) return ok({ canceled: true })
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('الأخطاء')
+    ws.addRow(['الورقة', 'الصف', 'نوع الخطأ', 'البيانات الأصلية', 'الوصف'])
+    for (const er of errors as ImportErrorRecord[]) ws.addRow([er.sheet, er.row, er.type, er.original, er.message])
+    await wb.xlsx.writeFile(res.filePath)
+    return ok({ canceled: false, path: res.filePath })
+  } catch (e) { return err((e as Error).message) }
+})
 
 // ===== الإعدادات =====
 handle('settings:get', (db, key) => {

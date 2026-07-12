@@ -31,7 +31,9 @@ export default function UpdateManager() {
         const seen = localStorage.getItem('aj_seen_version')
         if (seen && seen !== cur.version) setPhase('whatsnew')
         localStorage.setItem('aj_seen_version', cur.version)
-      } catch { /* */ }
+      } catch (err) {
+        console.error('Failed to get current version:', err)
+      }
     })()
 
     const offs = [
