@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { api, call } from '../lib/api'
 import Icons from '../components/Icon'
-import { MiniCombo } from '../components/MiniChart'
+import { MiniCombo, MiniDonut } from '../components/MiniChart'
 import { fmt, fmtDate, shiftTypeLabel } from '../lib/format'
 import { calcFawryWithCommission, calcShiftClosing } from '../../core/engine'
 import type { Shift, Transaction, ShiftCustody, Setting } from '../../core/types'
@@ -15,8 +15,10 @@ import type { Shift, Transaction, ShiftCustody, Setting } from '../../core/types
 type FilterMode = 'all' | 'year' | 'month' | 'day'
 type FawryClose = { programSales: number; commissionPct: number }
 const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
+const PANEL_H = 460 // ارتفاع موحّد (بكسل) لتحليل المبيعات + اتجاه آخر 12 شهر + جدول الشيفتات — تمرير داخلي عند تجاوز المحتوى له
+const ROW2_H = 220 // ارتفاع موحّد (بكسل) لعداد الأوفر/العجز + الرسم البياني + مؤشر المبيعات (الصف الثاني)
 
-export default function Dashboard({ onNavigate }: { onNavigate: (page: string) => void }) {
+export default function Dashboard() {
   const [allShifts, setAllShifts] = useState<Shift[]>([])
   const [allTxs, setAllTxs] = useState<Transaction[]>([])
   const [fawryMap, setFawryMap] = useState<Record<number, FawryClose>>({})
@@ -25,6 +27,13 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
   const [partyCounts, setPartyCounts] = useState({ customers: 0, suppliers: 0 })
   const [loading, setLoading] = useState(true)
   const [activeShift, setActiveShift] = useState<Shift | null>(null)
+  const [pendingUpdate, setPendingUpdate] = useState<{ version: string } | null>(null)
+
+  useEffect(() => {
+    call(api.update.pending()).then(setPendingUpdate as (d: unknown) => void).catch(() => {})
+    const off = window.api.update.on('available', (d: unknown) => setPendingUpdate({ version: (d as { version?: string })?.version || '' }))
+    return () => { off && off() }
+  }, [])
 
   const now = new Date()
   const [filterMode, setFilterMode] = useState<FilterMode>('month')
@@ -120,6 +129,8 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
     const credit = inBySub('مبيعات آجل')
     const delivery = inBySub('مبيعات توصيل')
     const deliveryCount = countBySub('مبيعات توصيل')
+    const meatSales = inBySub('مبيعات لحوم')
+    const fawryCommissionProfit = cur.reduce((a, s) => { const f = fawryMap[s.id]; return a + (f ? Math.round(f.programSales * f.commissionPct / 10000) : 0) }, 0)
     const cashierCash = cur.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
 
     let surplus = 0, deficit = 0, balanced = 0, net = 0
@@ -172,7 +183,7 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
 
     return {
       cur, sales, posOnly, fawryOnly, prevSales, purchases, meatPurchases, expenses, wages,
-      collections, visa, credit, delivery, deliveryCount, cashierCash,
+      collections, visa, credit, delivery, deliveryCount, meatSales, fawryCommissionProfit, cashierCash,
       surplus, deficit, balanced, net, best, worst, payDist, itemsCount: tx.length,
       custodyAdd, custodyPaid, fundOpening, fundIn, fundOut, fundClosing, cashierPayVal, cashierNet,
       purchaseInvoiceCount, avgInvoice, maxInvoice,
@@ -205,9 +216,17 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
       for (const s of shiftsInMonth) cashVal += resultOf(s).result
       const invKey = `inventory.${m.key}`
       const inventoryVal = settingsMap[invKey] ? Number(settingsMap[invKey]) : 0
+      const monthNum = Number(m.key.slice(5, 7))
+      const prevD = new Date(filterYear, monthNum - 2, 1)
+      const prevMonthKey = `${prevD.getFullYear()}-${String(prevD.getMonth() + 1).padStart(2, '0')}`
+      const prevInvKey = `inventory.${prevMonthKey}`
+      const prevInventoryVal = settingsMap[prevInvKey] ? Number(settingsMap[prevInvKey]) : 0
+      const inventoryChangePct = prevInventoryVal > 0 ? ((inventoryVal - prevInventoryVal) / prevInventoryVal) * 100 : (inventoryVal > 0 ? 100 : 0)
+      const prevSalesVal = allShifts.filter(s => s.date.slice(0, 7) === prevMonthKey).reduce((a, s) => a + saleOf(s), 0)
+      const salesChangePct = prevSalesVal > 0 ? ((salesVal - prevSalesVal) / prevSalesVal) * 100 : (salesVal > 0 ? 100 : 0)
       const profitVal = salesVal - purchasesVal - expensesVal
       const marginVal = salesVal > 0 ? (profitVal / salesVal) * 100 : 0
-      return { ...m, sales: salesVal, purchases: purchasesVal, cash: cashVal, inventory: inventoryVal, expenses: expensesVal, profit: profitVal, margin: marginVal, txCount: tx.length, shiftsCount: shiftsInMonth.length }
+      return { ...m, sales: salesVal, purchases: purchasesVal, cash: cashVal, inventory: inventoryVal, inventoryChangePct, salesChangePct, expenses: expensesVal, profit: profitVal, margin: marginVal, txCount: tx.length, shiftsCount: shiftsInMonth.length }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allShifts, allTxs, fawryMap, settingsMap, filterYear])
@@ -284,19 +303,29 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
         <div className="text-center py-16" style={{ color: 'var(--txt-3)' }}><Icons.Refresh size={24} className="animate-spin mx-auto mb-2" /> جاري تحميل البيانات...</div>
       ) : (
         <>
-          {!activeShift && (
-            <div className="card flex items-center gap-3 p-2.5" style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.10), rgba(30,58,138,0.06))', border: '1px solid rgba(59,130,246,0.30)' }}>
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}><Icons.Journal size={16} /></div>
-              <div className="flex-1 min-w-0">
-                <div style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--txt-1)' }}>لا يوجد شيفت نشط حالياً</div>
-                <div style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>ابدأ شيفت جديد لبدء التسجيل.</div>
+          {pendingUpdate ? (
+            <div className="card p-0 overflow-hidden" style={{ background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.35)' }}>
+              <div className="flex items-center gap-2 px-3 py-2">
+                <Icons.Refresh size={14} style={{ color: '#ef4444', flexShrink: 0 }} />
+                <div className="flex-1 min-w-0 overflow-hidden">
+                  <span className="marquee-track" style={{ fontSize: 12, fontWeight: 800, color: '#ef4444' }}>
+                    🔴 يتوفر إصدار جديد {pendingUpdate.version ? `v${pendingUpdate.version}` : ''} من البرنامج — يمكنك الترقية الآن للحصول على أحدث الإصلاحات والتحسينات
+                  </span>
+                </div>
               </div>
-              <button onClick={() => onNavigate('daily')} className="btn-success-pro flex-shrink-0" style={{ fontSize: 11.5, padding: '6px 14px' }}>🚀 ابدأ شيفت جديد</button>
+            </div>
+          ) : (
+            <div className="card flex items-center gap-3 p-2.5" style={{ background: 'linear-gradient(135deg, rgba(59,130,246,0.10), rgba(30,58,138,0.06))', border: '1px solid rgba(59,130,246,0.30)' }}>
+              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}><Icons.Dashboard size={16} /></div>
+              <div className="flex-1 min-w-0">
+                <div style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--txt-1)' }}>{settingsMap['biz.name'] || 'AJ Smart Shift'}</div>
+                <div style={{ fontSize: 10.5, color: 'var(--txt-2)' }}>تابع لوحة المعلومات باستمرار لمراقبة أداء نشاطك واكتشاف أي تغيّر في المبيعات أو المصروفات أو المخزون مبكراً.</div>
+              </div>
             </div>
           )}
 
-          {/* ═══ الصف الأول — الحسابات الأربعة (العهدة/الكاشير/الصندوق/مؤشرات عامة) بدل بطاقات المبيعات ═══ */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+          {/* ═══ الصف الأول — 8 بطاقات مصغّرة ═══ */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
             <TopAccountCard title="حساب العهدة" icon={<Icons.Fund size={12} />} color="#f59e0b">
               <Stat label="الإضافات" value={`${fmt(M.custodyAdd)} ج`} color="var(--txt-1)" />
               <Stat label="المصروفات" value={`${fmt(M.custodyPaid)} ج`} color="#ef4444" />
@@ -325,139 +354,126 @@ export default function Dashboard({ onNavigate }: { onNavigate: (page: string) =
               <Stat label="عدد العمليات" value={String(generalStats.itemsInWindow)} color="var(--txt-1)" />
               <Stat label="نسبة النمو" value={`${growthPct >= 0 ? '+' : ''}${growthPct.toFixed(1)}%`} color={growthPct >= 0 ? '#22c55e' : '#ef4444'} />
             </TopAccountCard>
+
+            <TopAccountCard title="مؤشرات مباشرة" icon={<Icons.Reports size={12} />} color="#8b5cf6">
+              <Stat label="إجمالي الإيرادات" value={`${fmt(M.totalRevenue)} ج`} color="#22c55e" />
+              <Stat label="إجمالي المصروفات" value={`${fmt(M.totalExpensesAll)} ج`} color="#ef4444" />
+              <Stat label="صافي الربح" value={`${fmt(M.netProfit)} ج`} color={M.netProfit >= 0 ? '#22c55e' : '#ef4444'} />
+              <Stat label="نسبة الربحية" value={`${M.profitMarginPct.toFixed(1)}%`} color="#8b5cf6" />
+            </TopAccountCard>
+
+            <TopAccountCard title="مؤشرات إضافية" icon={<Icons.Employees size={12} />} color="#06b6d4">
+              <Stat label="عدد العملاء" value={String(partyCounts.customers)} color="var(--txt-1)" />
+              <Stat label="عدد الموردين" value={String(partyCounts.suppliers)} color="var(--txt-1)" />
+              <Stat label="عدد العمليات" value={String(M.itemsCount)} color="var(--txt-1)" />
+              <Stat label="متوسط العملية" value={`${fmt(M.avgTxValue)} ج`} color="#06b6d4" />
+            </TopAccountCard>
+
+            <TopAccountCard title="أفضل وأسوأ فترة" icon={<Icons.Records size={12} />} color="#d4a017">
+              <Stat label="أفضل شهر" value={generalStats.bestMonth ? generalStats.bestMonth.label : '—'} color="#22c55e" />
+              <Stat label="أسوأ شهر" value={generalStats.worstMonth ? generalStats.worstMonth.label : '—'} color="#ef4444" />
+              <Stat label="أعلى مبيعات (شيفت)" value={`${fmt(M.best?.sale ?? 0)} ج`} color="#22c55e" />
+              <Stat label="أقل مبيعات (شيفت)" value={`${fmt(M.worst?.sale ?? 0)} ج`} color="#ef4444" />
+            </TopAccountCard>
+
+            <TopAccountCard title="حسابات المشتريات" icon={<Icons.Download size={12} />} color="#f59e0b">
+              <Stat label="إجمالي المشتريات" value={`${fmt(M.purchases)} ج`} color="#f59e0b" />
+              <Stat label="عدد الفواتير" value={String(M.purchaseInvoiceCount)} color="var(--txt-1)" />
+              <Stat label="متوسط الفاتورة" value={`${fmt(M.avgInvoice)} ج`} color="var(--txt-1)" />
+              <Stat label="أعلى فاتورة" value={`${fmt(M.maxInvoice)} ج`} color="#f59e0b" />
+            </TopAccountCard>
           </div>
 
-          {/* ═══ ثلاثة أعمدة ثابتة: يسار · وسط · يمين — بلا عمود إزاحة (لا تمرير داخلي منفصل) ═══ */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_2fr_1fr] gap-2 items-start">
+          {/* ═══ ثلاثة أعمدة ثابتة: يسار · وسط · يمين — الأجزاء الثلاثة بنفس الارتفاع الموحّد PANEL_H مع تمرير داخلي عند الحاجة ═══ */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr_1.7fr] gap-2 items-start">
 
-            {/* ═══ العمود الأيسر — الحسابات ═══ */}
+            {/* ═══ العمود الأيسر (أقصى يمين الشاشة) — تحليل المبيعات ═══ */}
             <div className="space-y-1.5">
-              <AccountCard title="حسابات المشتريات" icon={<Icons.Download size={13} />} color="#f59e0b">
-                <Stat label="إجمالي المشتريات" value={`${fmt(M.purchases)} ج`} color="#f59e0b" />
-                <Stat label="عدد الفواتير" value={String(M.purchaseInvoiceCount)} color="var(--txt-1)" />
-                <Stat label="متوسط الفاتورة" value={`${fmt(M.avgInvoice)} ج`} color="var(--txt-1)" />
-                <Stat label="أعلى فاتورة" value={`${fmt(M.maxInvoice)} ج`} color="#f59e0b" />
-              </AccountCard>
-
-              <AccountCard title="حسابات الكاشير" icon={<Icons.User size={13} />} color="#3b82f6">
-                <Stat label="المقبوضات" value={`${fmt(M.cashierPayVal)} ج`} color="#22c55e" />
-                <Stat label="المنصرفات" value={`${fmt(M.custodyPaid)} ج`} color="#ef4444" />
-                <Stat label="صافي الكاشير" value={`${fmt(M.cashierNet)} ج`} color="#3b82f6" />
-                <Stat label="متوسط النقدية" value={`${fmt(M.avgCashPerShift)} ج`} color="var(--txt-1)" />
-              </AccountCard>
-
-              <AccountCard title="حسابات الخزينة" icon={<Icons.Backup size={13} />} color="#22c55e">
-                <Stat label="رصيد أول الفترة" value={`${fmt(M.fundOpening)} ج`} color="var(--txt-1)" />
-                <Stat label="المقبوضات" value={`${fmt(M.fundIn)} ج`} color="#22c55e" />
-                <Stat label="المنصرفات" value={`${fmt(M.fundOut)} ج`} color="#ef4444" />
-                <Stat label="الرصيد الحالي" value={`${fmt(M.fundClosing)} ج`} color="#22c55e" />
-              </AccountCard>
-
-              <AccountCard title="مؤشرات مباشرة" icon={<Icons.Reports size={13} />} color="#8b5cf6">
-                <Stat label="إجمالي الإيرادات" value={`${fmt(M.totalRevenue)} ج`} color="#22c55e" />
-                <Stat label="إجمالي المصروفات" value={`${fmt(M.totalExpensesAll)} ج`} color="#ef4444" />
-                <Stat label="صافي الربح" value={`${fmt(M.netProfit)} ج`} color={M.netProfit >= 0 ? '#22c55e' : '#ef4444'} />
-                <Stat label="نسبة الربحية" value={`${M.profitMarginPct.toFixed(1)}%`} color="#8b5cf6" />
-              </AccountCard>
-
-              <AccountCard title="مؤشرات إضافية" icon={<Icons.Employees size={13} />} color="#06b6d4">
-                <Stat label="عدد العملاء" value={String(partyCounts.customers)} color="var(--txt-1)" />
-                <Stat label="عدد الموردين" value={String(partyCounts.suppliers)} color="var(--txt-1)" />
-                <Stat label="عدد العمليات" value={String(M.itemsCount)} color="var(--txt-1)" />
-                <Stat label="متوسط العملية" value={`${fmt(M.avgTxValue)} ج`} color="#06b6d4" />
-              </AccountCard>
-
-              <AccountCard title="أفضل وأسوأ فترة" icon={<Icons.Records size={13} />} color="#d4a017">
-                <Stat label="أفضل شهر" value={generalStats.bestMonth ? generalStats.bestMonth.label : '—'} color="#22c55e" />
-                <Stat label="أسوأ شهر" value={generalStats.worstMonth ? generalStats.worstMonth.label : '—'} color="#ef4444" />
-                <Stat label="أعلى مبيعات (شيفت)" value={`${fmt(M.best?.sale ?? 0)} ج`} color="#22c55e" />
-                <Stat label="أقل مبيعات (شيفت)" value={`${fmt(M.worst?.sale ?? 0)} ج`} color="#ef4444" />
-              </AccountCard>
+              <SalesAnalysis M={M} />
+              <SalesDonut M={M} />
             </div>
 
             {/* ═══ المنطقة الوسطى — أهم منطقة بصرية (بلا تمرير داخلي — تمرير الصفحة فقط) ═══ */}
             <div className="space-y-1.5">
-              <div className="card p-2">
-                <CardTitle icon={<Icons.Reports size={13} />} title="المبيعات والمصروفات والأرباح — آخر 12 شهر" color="#3b82f6" />
-                <MiniCombo data={chartData} height={140} formatter={v => `${fmt(v)} ج`} />
-              </div>
-
-              <div className="card p-0 overflow-hidden">
-                <div className="px-3 py-1.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+              <div className="card p-0 overflow-hidden flex flex-col" style={{ height: PANEL_H }}>
+                <div className="px-3 py-1.5 flex items-center justify-between flex-shrink-0" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
                   <div className="flex items-center gap-1.5"><Icons.Reports size={12} style={{ color: 'var(--accent)' }} /><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt-1)' }}>اتجاه آخر 12 شهر</span></div>
                   <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>المخزون يُدخل يدوياً لكل شهر</span>
                 </div>
-                <table className="w-full text-2xs dash-compact-table">
-                  <thead className="sticky top-0 z-10"><tr>
-                    <th className="th">الشهر</th>
-                    <th className="th" style={{ color: '#22c55e' }}>مبيعات</th>
-                    <th className="th" style={{ color: '#ef4444' }}>مصروفات</th>
-                    <th className="th" style={{ color: '#3b82f6' }}>أرباح</th>
-                    <th className="th" style={{ color: '#8b5cf6' }}>نسبة الربحية</th>
-                    <th className="th" style={{ color: '#a78bfa' }}>مخزون</th>
-                  </tr></thead>
-                  <tbody>
-                    {twelveMonths.map(m => (
-                      <tr key={m.key} className="tr">
-                        <td className="td font-bold">{m.label}</td>
-                        <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(m.sales)}</td>
-                        <td className="td tabular-nums" style={{ color: '#ef4444' }}>{fmt(m.purchases + m.expenses)}</td>
-                        <td className="td tabular-nums" style={{ color: m.profit >= 0 ? '#3b82f6' : '#ef4444' }}>{fmt(m.profit)}</td>
-                        <td className="td tabular-nums" style={{ color: '#8b5cf6' }}>{m.margin.toFixed(1)}%</td>
-                        <td className="td"><InventoryCell value={m.inventory} onSave={v => saveInventory(m.key, v)} /></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <div className="flex-1 overflow-y-auto">
+                  <table className="w-full text-2xs dash-compact-table">
+                    <thead className="sticky top-0 z-10"><tr>
+                      <th className="th">الشهر</th>
+                      <th className="th" style={{ color: '#22c55e' }}>مبيعات</th>
+                      <th className="th" style={{ color: '#3b82f6' }}>% مقارنة بالشهر السابق</th>
+                      <th className="th" style={{ color: '#ef4444' }}>مصروفات</th>
+                      <th className="th" style={{ color: '#f59e0b' }}>مشتريات</th>
+                      <th className="th" style={{ color: '#a78bfa' }}>مخزون</th>
+                      <th className="th" style={{ color: '#8b5cf6' }}>% حركة المخزون</th>
+                    </tr></thead>
+                    <tbody>
+                      {twelveMonths.map(m => (
+                        <tr key={m.key} className="tr">
+                          <td className="td font-bold">{m.label}</td>
+                          <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(m.sales)}</td>
+                          <td className="td tabular-nums" style={{ color: m.salesChangePct >= 0 ? '#22c55e' : '#ef4444' }}>{m.salesChangePct >= 0 ? '+' : ''}{m.salesChangePct.toFixed(1)}%</td>
+                          <td className="td tabular-nums" style={{ color: '#ef4444' }}>{fmt(m.expenses)}</td>
+                          <td className="td tabular-nums" style={{ color: '#f59e0b' }}>{fmt(m.purchases)}</td>
+                          <td className="td"><InventoryCell value={m.inventory} onSave={v => saveInventory(m.key, v)} /></td>
+                          <td className="td tabular-nums" style={{ color: m.inventoryChangePct >= 0 ? '#22c55e' : '#ef4444' }}>{m.inventoryChangePct >= 0 ? '+' : ''}{m.inventoryChangePct.toFixed(1)}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
-              {/* جدول الشيفتات — ملحق داخل المنطقة الوسطى (لا بطاقة ممتدة مستقلة، ولا تمرير داخلي) */}
-              <div className="card p-0 overflow-hidden">
-                <div className="px-3 py-1.5 flex items-center justify-between" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+              <div className="card p-2 flex flex-col" style={{ height: ROW2_H }}>
+                <CardTitle icon={<Icons.Reports size={13} />} title="المبيعات والمصروفات والأرباح — آخر 12 شهر" color="#3b82f6" />
+                <div className="flex-1 flex flex-col justify-center">
+                  <MiniCombo data={chartData} height={140} formatter={v => `${fmt(v)} ج`} />
+                </div>
+              </div>
+            </div>
+
+            {/* ═══ العمود الأيمن (أقصى يسار الشاشة) — جدول الشيفتات ═══ */}
+            <div className="space-y-1.5">
+              <div className="card p-0 overflow-hidden flex flex-col" style={{ height: PANEL_H }}>
+                <div className="px-3 py-1.5 flex items-center justify-between flex-shrink-0" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
                   <div className="flex items-center gap-1.5"><Icons.Records size={12} style={{ color: 'var(--accent)' }} /><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt-1)' }}>الشيفتات ({M.cur.length})</span></div>
                   <span className="tabular-nums text-2xs" style={{ color: '#22c55e' }}>مبيعات {fmt(M.sales)} ج</span>
                 </div>
                 {M.cur.length === 0 ? (
                   <div className="text-center py-6 text-2xs" style={{ color: 'var(--txt-3)' }}>لا توجد شيفتات في هذه الفترة</div>
                 ) : (
-                  <table className="w-full text-2xs dash-compact-table">
-                    <thead className="sticky top-0 z-10"><tr>
-                      <th className="th">#</th><th className="th">التاريخ</th><th className="th">النوع</th><th className="th">الكاشير</th>
-                      <th className="th" style={{ color: '#22c55e' }}>المبيعات</th><th className="th">الحالة</th>
-                    </tr></thead>
-                    <tbody>
-                      {[...M.cur].reverse().map(s => {
-                        const { result, status } = resultOf(s)
-                        const col = status === 'surplus' ? '#10b981' : status === 'deficit' ? '#ef4444' : '#f59e0b'
-                        const lbl = status === 'surplus' ? 'أوفر' : status === 'deficit' ? 'عجز' : 'مطابق'
-                        return (
-                          <tr key={s.id} className="tr">
-                            <td className="td font-bold" style={{ color: 'var(--accent)' }}>#{s.monthlyShiftNum}</td>
-                            <td className="td tabular-nums">{fmtDate(s.date)}</td>
-                            <td className="td">{shiftTypeLabel(s.type)}</td>
-                            <td className="td">{s.cashierName}</td>
-                            <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(saleOf(s))}</td>
-                            <td className="td"><span className="text-2xs px-2 py-0.5 rounded-full font-bold" style={{ background: col + '22', color: col }}>{lbl} {result !== 0 && `(${fmt(Math.abs(result))})`}</span></td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
+                  <div className="flex-1 overflow-y-auto">
+                    <table className="w-full text-2xs dash-compact-table">
+                      <thead className="sticky top-0 z-10"><tr>
+                        <th className="th">#</th><th className="th">التاريخ</th><th className="th">النوع</th><th className="th">الكاشير</th>
+                        <th className="th" style={{ color: '#22c55e' }}>المبيعات</th><th className="th">الحالة</th>
+                      </tr></thead>
+                      <tbody>
+                        {[...M.cur].reverse().map(s => {
+                          const { result, status } = resultOf(s)
+                          const col = status === 'surplus' ? '#10b981' : status === 'deficit' ? '#ef4444' : '#f59e0b'
+                          const lbl = status === 'surplus' ? 'أوفر' : status === 'deficit' ? 'عجز' : 'مطابق'
+                          return (
+                            <tr key={s.id} className="tr">
+                              <td className="td font-bold" style={{ color: 'var(--accent)' }}>#{s.monthlyShiftNum}</td>
+                              <td className="td tabular-nums">{fmtDate(s.date)}</td>
+                              <td className="td">{shiftTypeLabel(s.type)}</td>
+                              <td className="td">{s.cashierName}</td>
+                              <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(saleOf(s))}</td>
+                              <td className="td"><span className="text-2xs px-2 py-0.5 rounded-full font-bold" style={{ background: col + '22', color: col }}>{lbl} {result !== 0 && `(${fmt(Math.abs(result))})`}</span></td>
+                            </tr>
+                          )
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
                 )}
               </div>
-            </div>
-
-            {/* ═══ العمود الأيمن — بطاقات الأداء (نفس الارتفاع) + عدّاد الأوفر/العجز ═══ */}
-            <div className="space-y-1.5">
-              <NetGauge value={M.net} />
-              <Kpi label="مبيعات POS" value={M.posOnly} color="#22c55e" icon="🖥️" />
-              <Kpi label="مبيعات فوري" value={M.fawryOnly} color="#a78bfa" icon="📱" />
-              <Kpi label="مبيعات فيزا" value={M.visa} color="#10b981" icon="💳" />
-              <Kpi label="الأرباح" value={M.netProfit} color={M.netProfit >= 0 ? '#3b82f6' : '#ef4444'} icon="📈" />
-              <Kpi label="عدد العمليات" value={M.itemsCount} color="#06b6d4" icon="🧾" raw unit="" />
-              <Kpi label="متوسط العملية" value={M.avgTxValue} color="#8b5cf6" icon="⚖️" />
-              <Kpi label="أفضل شيفت" value={M.best?.sale ?? 0} color="#f59e0b" icon="🏆" hint={M.best ? `#${M.best.s.monthlyShiftNum}` : undefined} />
-              <Kpi label="أفضل شهر" value={generalStats.bestMonth?.sales ?? 0} color="#d4a017" icon="🗓️" hint={generalStats.bestMonth?.label} />
+              <NetGauge value={M.net} surplus={M.surplus} deficit={M.deficit} balanced={M.balanced} />
             </div>
           </div>
         </>
@@ -483,7 +499,7 @@ function TopAccountCard({ title, icon, color, cols = 2, children }: { title: str
 }
 
 /** عدّاد نصف دائري صغير للأوفر/العجز الإجمالي — أعلى العمود الأيمن */
-function NetGauge({ value }: { value: number }) {
+function NetGauge({ value, surplus, deficit, balanced }: { value: number; surplus: number; deficit: number; balanced: number }) {
   const scale = Math.max(Math.abs(value) * 1.25, 100000)
   const ratio = Math.max(-1, Math.min(1, value / scale))
   const angle = ratio * 80
@@ -498,12 +514,12 @@ function NetGauge({ value }: { value: number }) {
     'M 163.1 54.1 A 78 78 0 0 1 178.0 97.3',
   ]
   return (
-    <div className="card p-2 flex flex-col items-center" style={{ minHeight: 58 }}>
+    <div className="card p-2 flex flex-col items-center" style={{ height: ROW2_H }}>
       <div className="w-full flex items-center justify-between mb-0.5">
         <span className="text-2xs font-bold" style={{ color: 'var(--txt-2)' }}>حالة الأوفر/العجز</span>
         <span className="text-2xs font-black" style={{ color }}>{label}</span>
       </div>
-      <div className="flex items-center gap-2 w-full">
+      <div className="flex-1 flex items-center gap-3 w-full">
         <svg viewBox="0 0 200 118" style={{ width: 70, flexShrink: 0 }}>
           {segPaths.map((d, i) => <path key={i} d={d} fill="none" stroke={segs[i]} strokeWidth={13} strokeLinecap="round" opacity={0.92} />)}
           <g transform={`rotate(${angle} 100 100)`} style={{ transition: 'transform 0.6s cubic-bezier(0.34,1.56,0.64,1)' }}>
@@ -512,21 +528,19 @@ function NetGauge({ value }: { value: number }) {
           <circle cx="100" cy="100" r="7" fill="var(--txt-1)" />
           <circle cx="100" cy="100" r="3" fill={color} />
         </svg>
-        <div className="tabular-nums font-black" style={{ fontSize: 15, color }}>{fmt(Math.abs(value))} <span style={{ fontSize: 9.5 }}>ج</span></div>
+        <div className="tabular-nums font-black flex-shrink-0" style={{ fontSize: 15, color }}>{fmt(Math.abs(value))} <span style={{ fontSize: 9.5 }}>ج</span></div>
+        <div style={{ width: 1, alignSelf: 'stretch', background: 'var(--inner-border)' }} />
+        <div className="flex-1 flex items-center justify-around">
+          <MiniCount label="شيفتات أوفر" value={surplus} color="#22c55e" />
+          <MiniCount label="شيفتات عجز" value={deficit} color="#ef4444" />
+          <MiniCount label="شيفتات مطابقة" value={balanced} color="#f59e0b" />
+        </div>
       </div>
     </div>
   )
 }
 
-/** بطاقة حساب — عنوان + شبكة 2×2 من القيم (العمود الأيسر) */
-function AccountCard({ title, icon, color, children }: { title: string; icon: React.ReactNode; color: string; children: React.ReactNode }) {
-  return (
-    <div className="card p-2">
-      <CardTitle icon={icon} title={title} color={color} />
-      <div className="grid grid-cols-2 gap-2">{children}</div>
-    </div>
-  )
-}
+/** تسمية + قيمة مصغّرة — تُستخدم داخل بطاقات TopAccountCard */
 function Stat({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div>
@@ -536,16 +550,89 @@ function Stat({ label, value, color }: { label: string; value: string; color: st
   )
 }
 
-/** بطاقة أداء مفردة (العمود الأيمن) — نفس الارتفاع لكل البطاقات */
-function Kpi({ label, value, color, icon, hint, trend, raw, unit = 'ج' }: { label: string; value: number; color: string; icon: string; hint?: string; trend?: React.ReactNode; raw?: boolean; unit?: string }) {
+/** شريحة عدّاد مصغّرة رأسية (قيمة كبيرة + تسمية أسفلها) — تُستخدم داخل NetGauge */
+function MiniCount({ label, value, color }: { label: string; value: number; color: string }) {
   return (
-    <div className="card p-2 flex flex-col justify-between" style={{ minHeight: 58 }}>
-      <div className="flex items-center justify-between mb-0.5 gap-1">
-        <div className="flex items-center gap-1.5 min-w-0"><span style={{ fontSize: 13 }}>{icon}</span><span className="text-2xs font-bold truncate" style={{ color: 'var(--txt-2)' }}>{label}</span></div>
-        {trend}
+    <div className="flex flex-col items-center">
+      <div className="tabular-nums font-black" style={{ fontSize: 15, color }}>{value}</div>
+      <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>{label}</div>
+    </div>
+  )
+}
+
+/** بطاقة تحليل المبيعات — دونات + جدول احترافي بدل البطاقات المتفرقة (العمود الأيمن) */
+function SalesAnalysis({ M }: { M: {
+  posOnly: number; fawryOnly: number; sales: number; visa: number
+  meatSales: number; delivery: number; fawryCommissionProfit: number; itemsCount: number
+} }) {
+  const total = M.sales || 0
+  const rows: { label: string; value: number; color: string; icon: string; pct: number | null }[] = [
+    { label: 'مبيعات POS',    value: M.posOnly,              color: '#22c55e', icon: '🖥️', pct: total > 0 ? (M.posOnly / total) * 100 : 0 },
+    { label: 'مبيعات فوري',   value: M.fawryOnly,             color: '#a78bfa', icon: '📱', pct: total > 0 ? (M.fawryOnly / total) * 100 : 0 },
+    { label: 'مبيعات فيزا',   value: M.visa,                  color: '#10b981', icon: '💳', pct: total > 0 ? (M.visa / total) * 100 : 0 },
+    { label: 'مبيعات لحوم',   value: M.meatSales,             color: '#ef4444', icon: '🥩', pct: total > 0 ? (M.meatSales / total) * 100 : 0 },
+    { label: 'مبيعات دليفري', value: M.delivery,              color: '#f97316', icon: '🛵', pct: total > 0 ? (M.delivery / total) * 100 : 0 },
+    { label: 'ربحية فوري (عمولة كاش اوت)', value: M.fawryCommissionProfit, color: '#8b5cf6', icon: '💰', pct: null },
+  ]
+  return (
+    <div className="card p-2 flex flex-col" style={{ height: PANEL_H }}>
+      <CardTitle icon={<Icons.Reports size={13} />} title="تحليل المبيعات" color="#3b82f6" />
+      <div className="flex-1 overflow-y-auto flex flex-col dash-compact-table">
+        <div className="flex tr">
+          <div className="th" style={{ flex: 2 }}>البند</div>
+          <div className="th" style={{ flex: 1.2 }}>القيمة</div>
+          <div className="th" style={{ flex: 0.8 }}>%</div>
+        </div>
+        <div className="flex-1 flex flex-col justify-between">
+          {rows.map(r => (
+            <div key={r.label} className="flex tr">
+              <div className="td font-bold" style={{ flex: 2 }}>{r.icon} {r.label}</div>
+              <div className="td tabular-nums" style={{ flex: 1.2, color: r.color }}>{fmt(r.value)} ج</div>
+              <div className="td tabular-nums" style={{ flex: 0.8, color: 'var(--txt-3)' }}>{r.pct !== null ? `${r.pct.toFixed(1)}%` : '—'}</div>
+            </div>
+          ))}
+          <div className="flex tr">
+            <div className="td font-bold" style={{ flex: 2 }}>🧾 عدد عمليات</div>
+            <div className="td tabular-nums" style={{ flex: 1.2, color: '#06b6d4' }}>{M.itemsCount}</div>
+            <div className="td tabular-nums" style={{ flex: 0.8, color: 'var(--txt-3)' }}>—</div>
+          </div>
+        </div>
       </div>
-      <div className="tabular-nums font-black" style={{ fontSize: 16, color, lineHeight: 1.2 }}>{raw ? value : fmt(value)} {unit && <span style={{ fontSize: 9.5 }}>{unit}</span>}</div>
-      {hint && <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>{hint}</div>}
+    </div>
+  )
+}
+
+/** مؤشر المبيعات — دونات POS/فوري + نسب مئوية جانبية، بطاقة مستقلة أسفل جدول تحليل المبيعات (أقصى يمين الصفحة) */
+function SalesDonut({ M }: { M: { posOnly: number; fawryOnly: number; sales: number } }) {
+  const total = M.posOnly + M.fawryOnly
+  const posPct = total > 0 ? (M.posOnly / total) * 100 : 0
+  const fawryPct = total > 0 ? 100 - posPct : 0
+  return (
+    <div className="card p-2 flex flex-col" style={{ height: ROW2_H }}>
+      <CardTitle icon={<Icons.Reports size={13} />} title="مؤشر المبيعات" color="#3b82f6" />
+      <div className="flex-1 flex items-center gap-3">
+        <div className="flex-1 flex flex-col items-center">
+          <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>POS</span>
+          <span className="tabular-nums font-black" style={{ fontSize: 16, color: '#22c55e' }}>{posPct.toFixed(1)}%</span>
+        </div>
+        <div style={{ width: 150, flexShrink: 0 }}>
+          <MiniDonut
+            data={[
+              { label: 'POS',  value: M.posOnly,  color: '#22c55e' },
+              { label: 'فوري', value: M.fawryOnly, color: '#a78bfa' },
+            ]}
+            height={150}
+            centerLabel="إجمالي المبيعات"
+            centerValue={fmt(M.sales || 0)}
+            centerValueSize={13}
+            formatter={v => `${fmt(v)} ج`}
+          />
+        </div>
+        <div className="flex-1 flex flex-col items-center">
+          <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>فوري</span>
+          <span className="tabular-nums font-black" style={{ fontSize: 16, color: '#a78bfa' }}>{fawryPct.toFixed(1)}%</span>
+        </div>
+      </div>
     </div>
   )
 }

@@ -69,7 +69,7 @@ export default function App() {
   )
 
   const pages: Record<Page, React.ReactNode> = {
-    dashboard:     <Dashboard onNavigate={setPage as (p: string) => void} />,
+    dashboard:     <Dashboard />,
     daily:         <Daily />,
     reports:       <Reports />,
     employees:     <Employees />,

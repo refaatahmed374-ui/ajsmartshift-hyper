@@ -235,6 +235,13 @@
 @keyframes fadeIn  { from { opacity: 0 }                     to { opacity: 1 } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(8px) } to { opacity: 1; transform: translateY(0) } }
 
+/* شريط تحديث متحرك — لوحة المعلومات */
+.marquee-track { display: inline-block; white-space: nowrap; animation: marquee 16s linear infinite; }
+@keyframes marquee {
+  from { transform: translateX(100%); }
+  to   { transform: translateX(-100%); }
+}
+
 /* شاشة تسجيل الدخول — فقاعات خلفية عائمة بهدوء */
 .login-blob { animation: loginFloat 9s ease-in-out infinite; }
 @keyframes loginFloat {

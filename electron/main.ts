@@ -235,6 +235,7 @@ ipcMain.handle('update:check',    async () => { try { const r = await autoUpdate
 ipcMain.handle('update:download', async () => { try { await autoUpdater.downloadUpdate(); return ok(true) } catch (e) { return err((e as Error).message) } })
 ipcMain.handle('update:install',  () => { autoUpdater.quitAndInstall(); return ok(true) })
 ipcMain.handle('update:current',  () => ok({ version: app.getVersion() }))
+ipcMain.handle('update:pending',  () => ok(updateInfo))
 
 // ===== الترخيص =====
 ipcMain.handle('license:status',   () => { try { return ok(LicenseRepo.getLicenseStatus()) } catch (e) { return err((e as Error).message) } })

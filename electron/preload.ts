@@ -162,6 +162,7 @@ const api = {
     download: () => ipcRenderer.invoke('update:download'),
     install:  () => ipcRenderer.invoke('update:install'),
     current:  () => ipcRenderer.invoke('update:current'),
+    pending:  () => ipcRenderer.invoke('update:pending'),
     on: (event: string, cb: (data: unknown) => void) => {
       const ch = `update:${event}`
       const listener = (_e: unknown, data: unknown) => cb(data)

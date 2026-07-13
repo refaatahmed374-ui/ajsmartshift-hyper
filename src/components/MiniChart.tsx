@@ -87,10 +87,11 @@ interface DonutProps {
   height?:    number
   centerLabel?: string
   centerValue?: string
+  centerValueSize?: number
   formatter?: (v: number) => string
 }
 
-export function MiniDonut({ data, height = 200, centerLabel, centerValue, formatter }: DonutProps) {
+export function MiniDonut({ data, height = 200, centerLabel, centerValue, centerValueSize = 18, formatter }: DonutProps) {
   const total = data.reduce((s, d) => s + d.value, 0)
   return (
     <div className="relative">
@@ -106,9 +107,9 @@ export function MiniDonut({ data, height = 200, centerLabel, centerValue, format
       </ResponsiveContainer>
       {/* النص الأوسط */}
       {(centerLabel || centerValue) && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          {centerValue && <div className="text-lg font-extrabold text-white tabular-nums">{centerValue}</div>}
-          {centerLabel && <div className="text-2xs text-surface-400">{centerLabel}</div>}
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none px-3">
+          {centerValue && <div className="font-extrabold tabular-nums text-center" style={{ fontSize: centerValueSize, color: 'var(--txt-1)', lineHeight: 1.15 }}>{centerValue}</div>}
+          {centerLabel && <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>{centerLabel}</div>}
         </div>
       )}
     </div>
