@@ -177,12 +177,20 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   function closeNoSave() { setDrafts(rows(DEFAULT_ROWS - txs.length)); setCloseDlg(false); exitPage() }
 
   function onCellKey(e: React.KeyboardEvent, r: number, c: number) {
-    const go = (nr: number) => {
-      const el = document.querySelector<HTMLElement>(`[data-cell="${nr}-${c}"]`)
+    const goCell = (nr: number, nc: number) => {
+      const el = document.querySelector<HTMLElement>(`[data-cell="${nr}-${nc}"]`)
       if (el) { e.preventDefault(); el.focus(); if (el instanceof HTMLInputElement) el.select() }
     }
-    if (e.key === 'Enter' || e.key === 'ArrowDown') go(r + 1)
-    else if (e.key === 'ArrowUp') go(r - 1)
+    const LAST_COL = 4 // 0=المبلغ 1=البيان 2=التصنيف الرئيسي 3=التصنيف الفرعي 4=طريقة الدفع
+    const isSelect = e.currentTarget instanceof HTMLSelectElement
+    if (e.key === 'Enter') goCell(r + 1, c)
+    // الأسهم في القوائم المنسدلة (select) تُترك لسلوك المتصفح الافتراضي لتغيير القيمة المختارة
+    else if (!isSelect && e.key === 'ArrowDown') goCell(r + 1, c)
+    else if (!isSelect && e.key === 'ArrowUp') goCell(r - 1, c)
+    else if (e.key === 'Tab') {
+      if (e.shiftKey) { if (c > 0) goCell(r, c - 1); else goCell(r - 1, LAST_COL) }
+      else { if (c < LAST_COL) goCell(r, c + 1); else goCell(r + 1, 0) }
+    }
   }
 
   if (!shift) return <div className="p-8 text-center" style={{ color: 'var(--txt-3)' }}>جارٍ التحميل…</div>
@@ -291,11 +299,11 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
                 {drafts.map((d, i) => (
                   <tr key={'d' + i} style={{ background: 'rgba(34,197,94,0.025)' }}>
                     <td className="td-lg" style={{ color: 'var(--txt-3)' }}>{txs.length + i + 1}</td>
-                    <td className="td-lg"><input data-cell={`${i}-0`} onKeyDown={e => onCellKey(e, i, 0)} value={d.amount} onChange={e => setDraftRow(i, { amount: e.target.value })} className="w-full tabular-nums" style={inp} /></td>
-                    <td className="td-lg"><input data-cell={`${i}-1`} onKeyDown={e => onCellKey(e, i, 1)} value={d.description} onChange={e => setDraftRow(i, { description: e.target.value })} className="w-full" style={inp} /></td>
-                    <td className="td-lg"><select data-cell={`${i}-2`} onKeyDown={e => onCellKey(e, i, 2)} value={d.mainCategoryId} onChange={e => setDraftRow(i, { mainCategoryId: Number(e.target.value), subCategoryId: 0 })} className="w-full" style={inp}><option value={0}>—</option>{mains.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
-                    <td className="td-lg"><select data-cell={`${i}-3`} onKeyDown={e => onCellKey(e, i, 3)} value={d.subCategoryId} onChange={e => setDraftRow(i, { subCategoryId: Number(e.target.value) })} className="w-full" style={inp}><option value={0}>—</option>{subs.filter(s => s.mainCategoryId === d.mainCategoryId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
-                    <td className="td-lg"><select data-cell={`${i}-4`} onKeyDown={e => onCellKey(e, i, 4)} value={d.payMethod} onChange={e => setDraftRow(i, { payMethod: e.target.value as PayMethod })} className="w-full" style={inp}>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
+                    <td className="td-lg"><input data-cell={`${i}-0`} onKeyDown={e => onCellKey(e, i, 0)} value={d.amount} onChange={e => setDraftRow(i, { amount: e.target.value })} className="w-full tabular-nums sheet-cell" style={inp} /></td>
+                    <td className="td-lg"><input data-cell={`${i}-1`} onKeyDown={e => onCellKey(e, i, 1)} value={d.description} onChange={e => setDraftRow(i, { description: e.target.value })} className="w-full sheet-cell" style={inp} /></td>
+                    <td className="td-lg"><select data-cell={`${i}-2`} onKeyDown={e => onCellKey(e, i, 2)} value={d.mainCategoryId} onChange={e => setDraftRow(i, { mainCategoryId: Number(e.target.value), subCategoryId: 0 })} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{mains.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
+                    <td className="td-lg"><select data-cell={`${i}-3`} onKeyDown={e => onCellKey(e, i, 3)} value={d.subCategoryId} onChange={e => setDraftRow(i, { subCategoryId: Number(e.target.value) })} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{subs.filter(s => s.mainCategoryId === d.mainCategoryId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
+                    <td className="td-lg"><select data-cell={`${i}-4`} onKeyDown={e => onCellKey(e, i, 4)} value={d.payMethod} onChange={e => setDraftRow(i, { payMethod: e.target.value as PayMethod })} className="w-full sheet-cell" style={inp}>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
                     <td className="td-lg text-center"><span className="text-2xs font-bold px-1.5 py-0.5 rounded-full" style={dirOf(d.mainCategoryId) === 'in' ? { background: 'rgba(34,197,94,0.13)', color: G.edit } : { background: 'rgba(248,113,113,0.13)', color: G.warn }}>{dirOf(d.mainCategoryId) === 'in' ? 'وارد' : 'منصرف'}</span></td>
                     <td className="td-lg"></td>
                   </tr>
