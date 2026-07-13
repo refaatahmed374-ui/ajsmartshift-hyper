@@ -10,6 +10,7 @@ out/
 dist/
 dist-electron/
 release/
+جاهز_للحذف/
 *.exe
 *.exe.blockmap
 latest.yml
