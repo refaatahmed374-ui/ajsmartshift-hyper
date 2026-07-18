@@ -4,24 +4,24 @@ import { useToast } from '../store/toast'
 import Icons from '../components/Icon'
 import KPICard from '../components/KPICard'
 import ShiftSheet from '../components/ShiftSheet'
-import Treasury from './Treasury'
 import { fmt, fmtDate, shiftTypeLabel, parsePias } from '../lib/format'
 import { generateShiftReportPDF } from '../lib/shiftReport'
 import { calcShiftClosing, calcFawry } from '../../core/engine'
 import { APP_VERSION } from '../version'
 import type { Shift, Transaction, EmployeeFinancials, ShiftFawry } from '../../core/types'
 
-type Tab = 'journal' | 'cashier_rep' | 'admin_rep' | 'monthly_close' | 'annual_close' | 'sales' | 'purchases' | 'expenses' | 'employees' | 'financial'
+type Tab = 'journal' | 'monthly_close' | 'annual_close' | 'sales' | 'purchases' | 'expenses' | 'costs' | 'equity' | 'employees' | 'financial'
 
 const TABS: { id: Tab; label: string; icon: React.ReactNode; color: string; match: RegExp }[] = [
   { id: 'journal',       label: 'سجل اليوميات',           icon: <Icons.Journal size={15} />,     color: '#3b82f6', match: /.*/ },
-  { id: 'cashier_rep',   label: 'تقارير حسابات الكاشير',  icon: <Icons.User size={15} />,        color: '#06b6d4', match: /.*/ },
-  { id: 'admin_rep',     label: 'تقارير حسابات الإدارة',  icon: <Icons.Fund size={15} />,        color: '#f59e0b', match: /.*/ },
   { id: 'monthly_close', label: 'تقارير التقفيل الشهري',  icon: <Icons.Lock size={15} />,        color: '#8b5cf6', match: /.*/ },
   { id: 'annual_close',  label: 'تقارير التقفيل السنوي',  icon: <Icons.Lock size={15} />,        color: '#ec4899', match: /.*/ },
   { id: 'sales',         label: 'تقارير المبيعات',        icon: <Icons.ArrowRight size={15} />,  color: '#2ea043', match: /مبيع|إيراد|تحصيل|فيزا/ },
   { id: 'purchases',     label: 'تقارير المشتريات',       icon: <Icons.Records size={15} />,     color: '#388bfd', match: /مشتر/ },
   { id: 'expenses',      label: 'تقارير المصروفات',       icon: <Icons.Fund size={15} />,        color: '#f85149', match: /مصروف|جزاء|أجور|كهرب|إيجار/ },
+  // v2.33.0 — تبويبان جديدان بعد إضافة تصنيفي "التكاليف"/"حقوق الملكية" الرئيسيين
+  { id: 'costs',         label: 'تقارير التكاليف',        icon: <Icons.Records size={15} />,     color: '#0ea5e9', match: /تكاليف/ },
+  { id: 'equity',        label: 'تقارير حقوق الملكية',    icon: <Icons.Fund size={15} />,        color: '#64748b', match: /حقوق الملكية/ },
   { id: 'financial',     label: 'التقارير المالية',       icon: <Icons.Reports size={15} />,     color: '#8957e5', match: /.*/ },
   { id: 'employees',     label: 'تقارير الموظفين',        icon: <Icons.Employees size={15} />,   color: '#d4a017', match: /.*/ },
 ]
@@ -33,16 +33,33 @@ interface FinancialData {
 
 // تجميع التقارير الفرعية للقائمة المنسدلة
 const GROUPS: { title: string; ids: Tab[] }[] = [
-  { title: 'أساسية',      ids: ['journal', 'cashier_rep', 'admin_rep'] },
+  { title: 'أساسية',      ids: ['journal'] },
   { title: 'تقفيل دوري',  ids: ['monthly_close', 'annual_close'] },
-  { title: 'تحليلية',     ids: ['sales', 'purchases', 'expenses', 'financial', 'employees'] },
+  { title: 'تحليلية',     ids: ['sales', 'purchases', 'expenses', 'costs', 'equity', 'financial', 'employees'] },
 ]
 
 export default function Reports() {
   const { show } = useToast()
   const [tab,    setTab]    = useState<Tab>('journal')
+  // v2.33.0 — تبويبات مفتوحة في نفس الوقت (زي المتصفح) — tab هو التبويب النشط المعروض حالياً
+  const [openTabs, setOpenTabs] = useState<Tab[]>(['journal'])
+  function openReport(id: Tab) {
+    setOpenTabs(prev => prev.includes(id) ? prev : [...prev, id])
+    setTab(id)
+  }
+  function closeReport(id: Tab) {
+    setOpenTabs(prev => {
+      const next = prev.filter(x => x !== id)
+      if (!next.length) return prev // لا تُغلق آخر تبويب مفتوح
+      if (tab === id) setTab(next[next.length - 1])
+      return next
+    })
+  }
   const [pickerOpen, setPickerOpen] = useState(false)
   const [month,  setMonth]  = useState(() => new Date().toISOString().slice(0, 7))
+  // v2.33.0 — فلتر فترة إضافي: شهر كامل (افتراضي) أو يوم محدد داخل نفس الشهر
+  const [periodMode, setPeriodMode] = useState<'month' | 'day'>('month')
+  const [day, setDay] = useState(() => new Date().toISOString().slice(0, 10))
   const [shifts, setShifts] = useState<Shift[]>([])
   const [allTxs, setAllTxs] = useState<Transaction[]>([])
   const [empFin, setEmpFin] = useState<EmployeeFinancials[]>([])
@@ -50,6 +67,9 @@ export default function Reports() {
   const [exporting, setExporting] = useState(false)
   const [bizName, setBizName] = useState('')
   const [finData, setFinData] = useState<FinancialData | null>(null)
+  // v2.33.0 — فلتر تصنيف فرعي خاص بكل قسم (مبيعات/مشتريات/مصروفات) + بحث اسم الموظف
+  const [subFilter, setSubFilter] = useState('')
+  const [empSearch, setEmpSearch] = useState('')
 
   const printRef = useRef<HTMLDivElement>(null)
 
@@ -72,14 +92,32 @@ export default function Reports() {
 
   const cfg = TABS.find(t => t.id === tab)!
 
-  // بنود التبويب الحالي (للتبويبات الثلاثة)
+  // إعادة ضبط فلتر التصنيف الفرعي عند تغيير التبويب (كل قسم له تصنيفاته الخاصة)
+  useEffect(() => { setSubFilter('') }, [tab])
+
+  // شيفتات الفترة الفعلية المعروضة (الشهر كاملاً، أو يوم واحد محدد داخله)
+  const periodShifts = useMemo(
+    () => periodMode === 'day' ? shifts.filter(s => s.date === day) : shifts,
+    [shifts, periodMode, day]
+  )
+
+  // بنود التبويب الحالي (للتبويبات الثلاثة: مبيعات/مشتريات/مصروفات) — مقيّدة بالفترة + فلتر التصنيف الفرعي
   const txRows = useMemo(() => {
     if (tab === 'employees') return []
-    const shiftMap = new Map(shifts.map(s => [s.id, s]))
+    const shiftMap = new Map(periodShifts.map(s => [s.id, s]))
     return allTxs
+      .filter(t => shiftMap.has(t.shiftId))
       .filter(t => cfg.match.test(t.mainCategoryName || ''))
+      .filter(t => !subFilter || t.subCategoryName === subFilter)
       .map(t => ({ ...t, shift: shiftMap.get(t.shiftId) }))
-  }, [allTxs, shifts, tab])
+  }, [allTxs, periodShifts, tab, cfg, subFilter])
+
+  // التصنيفات الفرعية المتاحة لهذا القسم (بمعزل عن فلتر التصنيف نفسه، حتى تظهر كل الخيارات دائماً)
+  const subOptions = useMemo(() => {
+    const shiftMap = new Map(periodShifts.map(s => [s.id, s]))
+    const matched = allTxs.filter(t => shiftMap.has(t.shiftId) && cfg.match.test(t.mainCategoryName || ''))
+    return Array.from(new Set(matched.map(t => t.subCategoryName).filter(Boolean))).sort()
+  }, [allTxs, periodShifts, cfg])
 
   // KPIs للتبويبات الثلاثة
   const kpis = useMemo(() => {
@@ -89,6 +127,24 @@ export default function Reports() {
     const max   = txRows.reduce((m, t) => Math.max(m, t.amountIn + t.amountOut), 0)
     return { total, count, avg, max }
   }, [txRows])
+
+  // تجميع بنود التبويب حسب التصنيف الفرعي — لعرض جدول تجميعي بدل القائمة المسطّحة فقط
+  const grouped = useMemo(() => {
+    const map = new Map<string, { count: number; total: number }>()
+    for (const t of txRows) {
+      const key = t.subCategoryName || 'بدون تصنيف فرعي'
+      const cur = map.get(key) ?? { count: 0, total: 0 }
+      cur.count++; cur.total += t.amountIn + t.amountOut
+      map.set(key, cur)
+    }
+    return Array.from(map.entries()).map(([name, v]) => ({ name, ...v })).sort((a, b) => b.total - a.total)
+  }, [txRows])
+
+  // فلترة قائمة الموظفين بالاسم
+  const filteredEmpFin = useMemo(
+    () => empFin.filter(f => f.name.toLowerCase().includes(empSearch.trim().toLowerCase())),
+    [empFin, empSearch]
+  )
 
   // ===== تصدير PDF عبر html2canvas (عربية مثالية) =====
   async function exportPDF() {
@@ -119,25 +175,44 @@ export default function Reports() {
     finally { setExporting(false) }
   }
 
-  const payLabel: Record<string, string> = { cashier: 'كاشير', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا' }
+  const payLabel: Record<string, string> = { cashier: 'كاشير', management: 'الصندوق', credit: 'آجل', visa: 'فيزا' }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
 
-      {/* رأس التقارير — منتقي منسدل احترافي */}
-      <div className="flex items-center gap-3 px-4 py-3 border-b border-surface-600 flex-shrink-0 bg-surface-800">
+      {/* رأس التقارير — تبويبات مفتوحة (زي المتصفح) + زر فتح تقرير جديد */}
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-surface-600 flex-shrink-0 bg-surface-800 flex-wrap">
         <span className="text-2xs font-bold hidden md:block" style={{ color: 'var(--txt-3)', letterSpacing: 1 }}>التقرير:</span>
+
+        {/* شرائح التبويبات المفتوحة حالياً */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {openTabs.map(id => {
+            const t = TABS.find(x => x.id === id)!
+            const active = tab === id
+            return (
+              <div key={id} onClick={() => setTab(id)} role="button"
+                className="flex items-center gap-1.5 pr-1.5 pl-2 py-1.5 rounded-lg cursor-pointer transition-all"
+                style={{ background: active ? t.color + '20' : 'var(--inner-bg)', border: `1px solid ${active ? t.color + '55' : 'var(--inner-border)'}` }}>
+                <span style={{ color: t.color, display: 'flex' }}>{t.icon}</span>
+                <span className="text-xs" style={{ color: active ? 'var(--txt-1)' : 'var(--txt-2)', fontWeight: active ? 700 : 500 }}>{t.label}</span>
+                {openTabs.length > 1 && (
+                  <button onClick={e => { e.stopPropagation(); closeReport(id) }}
+                    className="rounded-full w-4 h-4 flex items-center justify-center text-2xs hover:bg-white/10"
+                    style={{ color: 'var(--txt-3)' }} title="إغلاق">
+                    ✕
+                  </button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* زر فتح تقرير جديد */}
         <div className="relative">
           <button onClick={() => setPickerOpen(o => !o)}
-            className="flex items-center gap-2.5 px-4 py-2.5 rounded-xl transition-all"
-            style={{ background: cfg.color + '14', border: `1px solid ${cfg.color}55`, minWidth: 240 }}>
-            <span style={{ color: cfg.color, display: 'flex' }}>{cfg.icon}</span>
-            <span className="font-bold text-sm flex-1 text-right" style={{ color: 'var(--txt-1)' }}>{cfg.label}</span>
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={cfg.color} strokeWidth="2.5"
-              strokeLinecap="round" strokeLinejoin="round"
-              style={{ transform: pickerOpen ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }}>
-              <polyline points="6 9 12 15 18 9" />
-            </svg>
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold transition-all"
+            style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)', color: 'var(--txt-2)' }}>
+            <Icons.Plus size={13} /> فتح تقرير
           </button>
           {pickerOpen && (
             <>
@@ -150,14 +225,14 @@ export default function Reports() {
                       style={{ color: 'var(--txt-3)', letterSpacing: 1, background: 'var(--app-bg-solid)' }}>{g.title}</div>
                     {g.ids.map(id => {
                       const t = TABS.find(x => x.id === id)!
-                      const active = tab === id
+                      const isOpen = openTabs.includes(id)
                       return (
-                        <button key={id} onClick={() => { setTab(id); setPickerOpen(false) }}
+                        <button key={id} onClick={() => { openReport(id); setPickerOpen(false) }}
                           className="w-full flex items-center gap-3 px-4 py-2.5 transition-colors text-right hover:bg-white/5"
-                          style={{ background: active ? t.color + '18' : 'transparent', borderRight: active ? `3px solid ${t.color}` : '3px solid transparent' }}>
+                          style={{ background: isOpen ? t.color + '18' : 'transparent', borderRight: isOpen ? `3px solid ${t.color}` : '3px solid transparent' }}>
                           <span style={{ color: t.color, display: 'flex' }}>{t.icon}</span>
-                          <span className="text-sm flex-1" style={{ color: 'var(--txt-1)', fontWeight: active ? 700 : 500 }}>{t.label}</span>
-                          {active && <Icons.Check size={14} style={{ color: t.color }} />}
+                          <span className="text-sm flex-1" style={{ color: 'var(--txt-1)', fontWeight: isOpen ? 700 : 500 }}>{t.label}</span>
+                          {isOpen && <Icons.Check size={14} style={{ color: t.color }} />}
                         </button>
                       )
                     })}
@@ -168,8 +243,24 @@ export default function Reports() {
           )}
         </div>
         <div className="flex-1" />
-        <input className="field text-xs w-36" type="month" value={month}
-          onChange={e => setMonth(e.target.value)} />
+        {/* v2.33.0 — فلتر الفترة: شهر كامل أو يوم محدد */}
+        <div className="flex items-center gap-1 rounded-lg p-0.5" style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)' }}>
+          <button onClick={() => setPeriodMode('month')} className="px-2.5 py-1 rounded-md text-2xs font-bold transition-colors"
+            style={{ background: periodMode === 'month' ? 'var(--accent)' : 'transparent', color: periodMode === 'month' ? '#fff' : 'var(--txt-2)' }}>
+            شهر
+          </button>
+          <button onClick={() => setPeriodMode('day')} className="px-2.5 py-1 rounded-md text-2xs font-bold transition-colors"
+            style={{ background: periodMode === 'day' ? 'var(--accent)' : 'transparent', color: periodMode === 'day' ? '#fff' : 'var(--txt-2)' }}>
+            يوم محدد
+          </button>
+        </div>
+        {periodMode === 'month' ? (
+          <input className="field text-xs w-36" type="month" value={month}
+            onChange={e => setMonth(e.target.value)} />
+        ) : (
+          <input className="field text-xs w-36" type="date" value={day}
+            onChange={e => { setDay(e.target.value); setMonth(e.target.value.slice(0, 7)) }} />
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -187,10 +278,6 @@ export default function Reports() {
           <div className="text-center py-10" style={{ color: 'var(--txt-3)' }}>جاري التحميل...</div>
         ) : tab === 'journal' ? (
           <JournalReport shifts={shifts} allTxs={allTxs} month={month} bizName={bizName} onReload={load} />
-        ) : tab === 'cashier_rep' ? (
-          <CashierReport allTxs={allTxs} />
-        ) : tab === 'admin_rep' ? (
-          <AdminReport month={month} />
         ) : tab === 'monthly_close' ? (
           <MonthlyCloseReport month={month} shifts={shifts} allTxs={allTxs} empFin={empFin} finData={finData} />
         ) : tab === 'annual_close' ? (
@@ -205,49 +292,57 @@ export default function Reports() {
               <KPICard label="صافي الربح" value={fmt(finData?.netProfit ?? 0) + ' ج'} color={(finData?.netProfit ?? 0) >= 0 ? '#d4a017' : '#f85149'} icon={<Icons.Reports size={14}/>} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {/* قائمة الأرباح والخسائر */}
-              <div className="card">
-                <div className="font-bold text-white text-sm mb-3">قائمة الأرباح والخسائر (P&L)</div>
-                <div className="space-y-2 text-sm">
-                  {[
-                    ['الإيرادات',            finData?.revenues ?? 0, '#2ea043', '+'],
-                    ['(−) المشتريات',        finData?.purchases ?? 0, '#f85149', '−'],
-                    ['(−) المصروفات التشغيلية', finData?.expenses ?? 0, '#f85149', '−'],
-                  ].map(([l, v, c]) => (
-                    <div key={l as string} className="flex justify-between">
-                      <span style={{ color: 'var(--txt-2)' }}>{l as string}</span>
-                      <span className="tabular-nums font-bold" style={{ color: c as string }}>{fmt(v as number)} ج</span>
-                    </div>
-                  ))}
-                  <div className="flex justify-between border-t border-surface-600 pt-2 mt-1">
-                    <span className="font-bold" style={{ color: 'var(--txt-1)' }}>صافي الربح</span>
-                    <span className="tabular-nums font-bold" style={{ color: (finData?.netProfit ?? 0) >= 0 ? '#d4a017' : '#f85149', fontSize: '16px' }}>
-                      {fmt(finData?.netProfit ?? 0)} ج
-                    </span>
-                  </div>
+              {/* قائمة الأرباح والخسائر — جدول تجميعي */}
+              <div className="card p-0 overflow-hidden">
+                <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>قائمة الأرباح والخسائر (P&L)</div>
                 </div>
+                <table className="w-full text-xs">
+                  <tbody>
+                    {[
+                      ['الإيرادات',                finData?.revenues ?? 0, '#2ea043'],
+                      ['(−) المشتريات',            finData?.purchases ?? 0, '#f85149'],
+                      ['(−) المصروفات التشغيلية',  finData?.expenses ?? 0, '#f85149'],
+                    ].map(([l, v, c]) => (
+                      <tr key={l as string} className="tr">
+                        <td className="td font-bold" style={{ color: 'var(--txt-2)' }}>{l as string}</td>
+                        <td className="td tabular-nums font-bold" style={{ color: c as string }}>{fmt(v as number)} ج</td>
+                      </tr>
+                    ))}
+                    <tr className="tr" style={{ borderTop: '2px solid var(--inner-border)' }}>
+                      <td className="td font-bold" style={{ color: 'var(--txt-1)' }}>صافي الربح</td>
+                      <td className="td tabular-nums font-bold" style={{ color: (finData?.netProfit ?? 0) >= 0 ? '#d4a017' : '#f85149', fontSize: 14 }}>
+                        {fmt(finData?.netProfit ?? 0)} ج
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
-              {/* التدفق النقدي + الذمم */}
-              <div className="card">
-                <div className="font-bold text-white text-sm mb-3">التدفق النقدي والذمم</div>
-                <div className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--txt-2)' }}>تدفق نقدي داخل (كاشير)</span>
-                    <span className="tabular-nums font-bold text-success">{fmt(finData?.cashIn ?? 0)} ج</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span style={{ color: 'var(--txt-2)' }}>تدفق نقدي خارج (كاشير)</span>
-                    <span className="tabular-nums font-bold text-danger">{fmt(finData?.cashOut ?? 0)} ج</span>
-                  </div>
-                  <div className="flex justify-between border-t border-surface-600 pt-2">
-                    <span style={{ color: 'var(--txt-2)' }}>صافي التدفق النقدي</span>
-                    <span className="tabular-nums font-bold" style={{ color: 'var(--txt-1)' }}>{fmt((finData?.cashIn ?? 0) - (finData?.cashOut ?? 0))} ج</span>
-                  </div>
-                  <div className="flex justify-between border-t border-surface-600 pt-2 mt-1">
-                    <span style={{ color: '#d29922' }}>الذمم المدينة (آجل)</span>
-                    <span className="tabular-nums font-bold" style={{ color: '#d29922' }}>{fmt(finData?.receivables ?? 0)} ج</span>
-                  </div>
+              {/* التدفق النقدي + الذمم — جدول تجميعي */}
+              <div className="card p-0 overflow-hidden">
+                <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>التدفق النقدي والذمم</div>
                 </div>
+                <table className="w-full text-xs">
+                  <tbody>
+                    <tr className="tr">
+                      <td className="td font-bold" style={{ color: 'var(--txt-2)' }}>تدفق نقدي داخل (كاشير)</td>
+                      <td className="td tabular-nums font-bold" style={{ color: '#2ea043' }}>{fmt(finData?.cashIn ?? 0)} ج</td>
+                    </tr>
+                    <tr className="tr">
+                      <td className="td font-bold" style={{ color: 'var(--txt-2)' }}>تدفق نقدي خارج (كاشير)</td>
+                      <td className="td tabular-nums font-bold" style={{ color: '#f85149' }}>{fmt(finData?.cashOut ?? 0)} ج</td>
+                    </tr>
+                    <tr className="tr" style={{ borderTop: '2px solid var(--inner-border)' }}>
+                      <td className="td font-bold" style={{ color: 'var(--txt-1)' }}>صافي التدفق النقدي</td>
+                      <td className="td tabular-nums font-bold" style={{ color: 'var(--txt-1)', fontSize: 14 }}>{fmt((finData?.cashIn ?? 0) - (finData?.cashOut ?? 0))} ج</td>
+                    </tr>
+                    <tr className="tr" style={{ borderTop: '2px solid var(--inner-border)' }}>
+                      <td className="td font-bold" style={{ color: '#d29922' }}>الذمم المدينة (آجل)</td>
+                      <td className="td tabular-nums font-bold" style={{ color: '#d29922' }}>{fmt(finData?.receivables ?? 0)} ج</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
             <div className="text-xs" style={{ color: 'var(--txt-3)' }}>
@@ -259,12 +354,24 @@ export default function Reports() {
             {/* v2.27.0 (14-Jun) — تقارير الرواتب المحفوظة */}
             <PayrollReportsList />
 
-            {/* KPIs الموظفين */}
+            {/* بحث باسم الموظف */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold" style={{ color: 'var(--txt-3)' }}>بحث:</span>
+              <input className="field text-xs" style={{ width: 220 }} placeholder="ابحث باسم الموظف..."
+                value={empSearch} onChange={e => setEmpSearch(e.target.value)} />
+              {empSearch && (
+                <button onClick={() => setEmpSearch('')} className="text-2xs px-2 py-1 rounded-md" style={{ background: 'var(--inner-bg)', color: 'var(--txt-3)' }}>
+                  ✕ إلغاء
+                </button>
+              )}
+            </div>
+
+            {/* KPIs الموظفين (تعكس نتيجة البحث) */}
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-              <KPICard label="عدد الموظفين" value={String(empFin.length)} color="#d4a017" icon={<Icons.Employees size={14}/>} />
-              <KPICard label="إجمالي الأجر باليوم" value={fmt(empFin.reduce((s,f)=>s+f.wageByDays,0)) + ' ج'} color="#2ea043" icon={<Icons.Fund size={14}/>} />
-              <KPICard label="إجمالي السلف" value={fmt(empFin.reduce((s,f)=>s+f.advances,0)) + ' ج'} color="#f85149" icon={<Icons.ArrowRight size={14}/>} />
-              <KPICard label="إجمالي المستحق" value={fmt(empFin.reduce((s,f)=>s+f.dueSalary,0)) + ' ج'} color="#388bfd" icon={<Icons.Reports size={14}/>} />
+              <KPICard label="عدد الموظفين" value={String(filteredEmpFin.length)} color="#d4a017" icon={<Icons.Employees size={14}/>} />
+              <KPICard label="إجمالي الأجر باليوم" value={fmt(filteredEmpFin.reduce((s,f)=>s+f.wageByDays,0)) + ' ج'} color="#2ea043" icon={<Icons.Fund size={14}/>} />
+              <KPICard label="إجمالي السلف" value={fmt(filteredEmpFin.reduce((s,f)=>s+f.advances,0)) + ' ج'} color="#f85149" icon={<Icons.ArrowRight size={14}/>} />
+              <KPICard label="إجمالي المستحق" value={fmt(filteredEmpFin.reduce((s,f)=>s+f.dueSalary,0)) + ' ج'} color="#388bfd" icon={<Icons.Reports size={14}/>} />
             </div>
             <div className="card p-0 overflow-x-auto">
               <table className="w-full text-xs">
@@ -275,7 +382,7 @@ export default function Reports() {
                   <th className="th" style={{color:'#d4a017'}}>المستحق</th>
                 </tr></thead>
                 <tbody>
-                  {empFin.map(f => (
+                  {filteredEmpFin.map(f => (
                     <tr key={f.employeeId} className="tr">
                       <td className="td font-bold">{f.name}</td>
                       <td className="td tabular-nums text-success">{f.presentDays}</td>
@@ -288,12 +395,36 @@ export default function Reports() {
                     </tr>
                   ))}
                 </tbody>
+                <tfoot><tr className="border-t-2 border-surface-500">
+                  <td className="td font-bold">الإجمالي ({filteredEmpFin.length} موظف)</td>
+                  <td className="td tabular-nums font-bold text-success">{filteredEmpFin.reduce((s,f)=>s+f.presentDays,0)}</td>
+                  <td className="td tabular-nums font-bold text-danger">{filteredEmpFin.reduce((s,f)=>s+f.absentDays,0)}</td>
+                  <td className="td"></td>
+                  <td className="td tabular-nums font-bold">{fmt(filteredEmpFin.reduce((s,f)=>s+f.wageByDays,0))}</td>
+                  <td className="td tabular-nums font-bold text-danger">{fmt(filteredEmpFin.reduce((s,f)=>s+f.advances,0))}</td>
+                  <td className="td tabular-nums font-bold text-danger">{fmt(filteredEmpFin.reduce((s,f)=>s+f.penalties,0))}</td>
+                  <td className="td tabular-nums font-bold" style={{color:'#d4a017'}}>{fmt(filteredEmpFin.reduce((s,f)=>s+f.dueSalary,0))}</td>
+                </tr></tfoot>
               </table>
-              {empFin.length === 0 && <div className="text-center py-6" style={{color:'var(--txt-3)'}}>لا يوجد موظفون</div>}
+              {filteredEmpFin.length === 0 && <div className="text-center py-6" style={{color:'var(--txt-3)'}}>{empSearch ? 'لا يوجد موظف بهذا الاسم' : 'لا يوجد موظفون'}</div>}
             </div>
           </>
         ) : (
           <>
+            {/* فلتر التصنيف الفرعي الخاص بهذا القسم */}
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold" style={{ color: 'var(--txt-3)' }}>تصنيف فرعي:</span>
+              <select className="field text-xs" style={{ width: 200 }} value={subFilter} onChange={e => setSubFilter(e.target.value)}>
+                <option value="">الكل ({subOptions.length} تصنيف)</option>
+                {subOptions.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+              {subFilter && (
+                <button onClick={() => setSubFilter('')} className="text-2xs px-2 py-1 rounded-md" style={{ background: 'var(--inner-bg)', color: 'var(--txt-3)' }}>
+                  ✕ إلغاء الفلتر
+                </button>
+              )}
+            </div>
+
             {/* KPIs */}
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
               <KPICard label="الإجمالي" value={fmt(kpis.total) + ' ج'} color={cfg.color} icon={cfg.icon} />
@@ -301,6 +432,35 @@ export default function Reports() {
               <KPICard label="متوسط العملية" value={fmt(kpis.avg) + ' ج'} color="#8957e5" icon={<Icons.Reports size={14}/>} />
               <KPICard label="أعلى عملية" value={fmt(kpis.max) + ' ج'} color="#d29922" icon={<Icons.ArrowRight size={14}/>} />
             </div>
+
+            {/* جدول تجميعي حسب التصنيف الفرعي */}
+            <div className="card p-0 overflow-hidden">
+              <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>التوزيع حسب التصنيف الفرعي</div>
+              </div>
+              <table className="w-full text-xs">
+                <thead><tr>
+                  <th className="th">التصنيف الفرعي</th><th className="th">عدد البنود</th><th className="th">الإجمالي</th>
+                </tr></thead>
+                <tbody>
+                  {grouped.map(g => (
+                    <tr key={g.name} className="tr">
+                      <td className="td font-bold">{g.name}</td>
+                      <td className="td tabular-nums">{g.count}</td>
+                      <td className="td tabular-nums font-bold" style={{ color: cfg.color }}>{fmt(g.total)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot><tr className="border-t-2 border-surface-500">
+                  <td className="td font-bold">الإجمالي</td>
+                  <td className="td tabular-nums font-bold">{kpis.count}</td>
+                  <td className="td tabular-nums font-bold" style={{ color: cfg.color }}>{fmt(kpis.total)}</td>
+                </tr></tfoot>
+              </table>
+              {grouped.length === 0 && <div className="text-center py-6" style={{color:'var(--txt-3)'}}>لا توجد بيانات لهذه الفترة</div>}
+            </div>
+
+            {/* جدول تفصيلي لكل البنود */}
             <div className="card p-0 overflow-x-auto">
               <table className="w-full text-xs">
                 <thead><tr>
@@ -420,7 +580,7 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
   shifts: Shift[]; allTxs: Transaction[]; month: string; bizName: string; onReload: () => void;
 }) {
   const PAY_LABELS: Record<string, string> = {
-    cashier: 'كاشير', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا',
+    cashier: 'كاشير', management: 'الصندوق', credit: 'آجل', visa: 'فيزا',
   }
 
   // ── نتيجة كل شيفت — المعادلة الرسمية الموحّدة (ADR-012 v2) ──
@@ -798,243 +958,6 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
   )
 }
 
-// ═══════════════════════════════════════════════════════════
-// v2.27.0 — تقارير حسابات الكاشير
-// ═══════════════════════════════════════════════════════════
-function CashierReport({ allTxs }: { allTxs: Transaction[] }) {
-  const PAY_LABELS: Record<string, string> = {
-    cashier: 'كاشير (نقدي)', management: 'خزينة الإدارة', credit: 'آجل (ذمم)', visa: 'فيزا',
-  }
-  const PAY_COLORS: Record<string, string> = {
-    cashier: '#3b82f6', management: '#f59e0b', credit: '#8b5cf6', visa: '#10b981',
-  }
-  const PAY_DESC: Record<string, string> = {
-    cashier:    'مدفوع من نقدية الكاشير',
-    management: 'مدفوع من خزينة الإدارة (للعهدة)',
-    credit:     'دفع مؤجّل (ذمم على العملاء)',
-    visa:       'دفع ببطاقة فيزا',
-  }
-
-  const cashierTxs = allTxs.filter(t => t.payMethod === 'cashier')
-  const cashierIn  = cashierTxs.reduce((s, t) => s + t.amountIn,  0)
-  const cashierOut = cashierTxs.reduce((s, t) => s + t.amountOut, 0)
-  const cashierNet = cashierIn - cashierOut
-
-  // توزيع المنصرف حسب الطريقة
-  const totalAllOut = allTxs.reduce((s, t) => s + t.amountOut, 0)
-  const distribution = (['cashier', 'management'] as const).map(pm => {
-    const list = allTxs.filter(t => t.payMethod === pm)
-    const out  = list.reduce((s, t) => s + t.amountOut, 0)
-    const inn  = list.reduce((s, t) => s + t.amountIn,  0)
-    return { method: pm, count: list.length, in: inn, out, pct: totalAllOut > 0 ? (out / totalAllOut * 100) : 0 }
-  })
-
-  return (
-    <div className="space-y-4">
-      {/* رأس */}
-      <div className="flex items-center gap-2 mb-1">
-        <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-          style={{ background: 'rgba(6,182,212,0.18)', color: '#06b6d4' }}>
-          <Icons.User size={18} />
-        </div>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--txt-1)' }}>تقارير حسابات الكاشير</div>
-          <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>
-            ملخص الحركات النقدية وتوزيع طرق الدفع لكل بنود الشهر
-          </div>
-        </div>
-      </div>
-
-      {/* 3 بطاقات */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div className="rounded-2xl p-4" style={{
-          background: 'linear-gradient(135deg, rgba(34,197,94,0.12), rgba(34,197,94,0.04))',
-          border: '1.5px solid rgba(34,197,94,0.40)',
-        }}>
-          <div className="flex items-start justify-between mb-2">
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#22c55e' }}>⬇ الوارد عبر الكاشير</div>
-              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>إجمالي المبالغ المحصّلة نقداً</div>
-            </div>
-            <div className="p-2 rounded-lg" style={{ background: 'rgba(34,197,94,0.22)', color: '#22c55e' }}>
-              <Icons.ArrowRight size={14} />
-            </div>
-          </div>
-          <div className="tabular-nums" style={{ fontSize: 24, fontWeight: 900, color: '#22c55e', lineHeight: 1.1 }}>
-            +{fmt(cashierIn)} <span style={{ fontSize: 12 }}>ج</span>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--txt-3)', marginTop: 4 }}>
-            {cashierTxs.filter(t => t.amountIn > 0).length} بند وارد
-          </div>
-        </div>
-        <div className="rounded-2xl p-4" style={{
-          background: 'linear-gradient(135deg, rgba(239,68,68,0.12), rgba(239,68,68,0.04))',
-          border: '1.5px solid rgba(239,68,68,0.40)',
-        }}>
-          <div className="flex items-start justify-between mb-2">
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: '#ef4444' }}>⬆ المنصرف عبر الكاشير</div>
-              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>المصاريف المدفوعة نقداً</div>
-            </div>
-            <div className="p-2 rounded-lg" style={{ background: 'rgba(239,68,68,0.22)', color: '#ef4444' }}>
-              <Icons.ArrowRight size={14} className="rotate-180" />
-            </div>
-          </div>
-          <div className="tabular-nums" style={{ fontSize: 24, fontWeight: 900, color: '#ef4444', lineHeight: 1.1 }}>
-            −{fmt(cashierOut)} <span style={{ fontSize: 12 }}>ج</span>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--txt-3)', marginTop: 4 }}>
-            {cashierTxs.filter(t => t.amountOut > 0).length} بند منصرف
-          </div>
-        </div>
-        <div className="rounded-2xl p-4" style={{
-          background: cashierNet >= 0
-            ? 'linear-gradient(135deg, rgba(59,130,246,0.15), rgba(30,58,138,0.06))'
-            : 'linear-gradient(135deg, rgba(239,68,68,0.15), rgba(239,68,68,0.05))',
-          border: cashierNet >= 0 ? '1.5px solid rgba(59,130,246,0.50)' : '1.5px solid rgba(239,68,68,0.50)',
-        }}>
-          <div className="flex items-start justify-between mb-2">
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 700, color: cashierNet >= 0 ? 'var(--accent)' : '#ef4444' }}>💰 صافي الكاشير</div>
-              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>وارد − منصرف</div>
-            </div>
-            <div className="p-2 rounded-lg" style={{
-              background: cashierNet >= 0 ? 'rgba(59,130,246,0.22)' : 'rgba(239,68,68,0.22)',
-              color: cashierNet >= 0 ? 'var(--accent)' : '#ef4444',
-            }}>
-              <Icons.Fund size={14} />
-            </div>
-          </div>
-          <div className="tabular-nums" style={{
-            fontSize: 24, fontWeight: 900,
-            color: cashierNet >= 0 ? 'var(--accent)' : '#ef4444', lineHeight: 1.1,
-          }}>
-            {cashierNet >= 0 ? '+' : ''}{fmt(cashierNet)} <span style={{ fontSize: 12 }}>ج</span>
-          </div>
-          <div style={{
-            fontSize: 11, marginTop: 4, fontWeight: 600,
-            color: cashierNet >= 0 ? '#22c55e' : '#ef4444',
-          }}>
-            {cashierNet > 0 ? '✓ نقدية متبقية' : cashierNet < 0 ? '⚠ عجز' : '○ متزن'}
-          </div>
-        </div>
-      </div>
-
-      {/* توزيع طرق الدفع */}
-      <div className="card p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <span style={{ fontSize: 14 }}>💳</span>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>
-              توزيع المنصرف حسب طريقة الدفع
-            </div>
-            <div style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
-              كيف توزّع إجمالي المنصرف على طرق الدفع المختلفة
-            </div>
-          </div>
-          <div className="mr-auto text-xs tabular-nums font-bold" style={{ color: 'var(--txt-1)' }}>
-            إجمالي: <span style={{ color: '#ef4444' }}>{fmt(totalAllOut)} ج</span>
-          </div>
-        </div>
-        <div className="space-y-3">
-          {distribution.map(d => (
-            <div key={d.method}>
-              <div className="flex items-center justify-between mb-1.5">
-                <div className="flex items-center gap-2">
-                  <span className="w-2 h-2 rounded-full" style={{ background: PAY_COLORS[d.method] }} />
-                  <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--txt-1)' }}>
-                    {PAY_LABELS[d.method]}
-                  </span>
-                  <span className="text-2xs px-1.5 py-0.5 rounded-md"
-                    style={{ background: PAY_COLORS[d.method] + '20', color: PAY_COLORS[d.method], fontWeight: 700 }}>
-                    {d.count} بند
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="tabular-nums" style={{ fontSize: 13, fontWeight: 800, color: PAY_COLORS[d.method] }}>
-                    {fmt(d.out)} ج
-                  </span>
-                  <span className="text-2xs tabular-nums" style={{
-                    color: 'var(--txt-3)', minWidth: 40, textAlign: 'left',
-                  }}>
-                    ({d.pct.toFixed(1)}%)
-                  </span>
-                </div>
-              </div>
-              <div className="h-2 rounded-full overflow-hidden" style={{ background: 'var(--inner-bg)' }}>
-                <div className="h-full rounded-full transition-all duration-700"
-                  style={{
-                    width: `${Math.min(100, d.pct)}%`,
-                    background: `linear-gradient(90deg, ${PAY_COLORS[d.method]}, ${PAY_COLORS[d.method]}cc)`,
-                  }} />
-              </div>
-              <div style={{ fontSize: 10, color: 'var(--txt-3)', marginTop: 3 }}>{PAY_DESC[d.method]}</div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* جدول بنود الكاشير */}
-      {cashierTxs.length > 0 && (
-        <div className="card p-0 overflow-hidden">
-          <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
-            <div className="flex items-center gap-2">
-              <span style={{ fontSize: 14 }}>📋</span>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>
-                  بنود الكاشير ({cashierTxs.length})
-                </div>
-                <div style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
-                  جميع الحركات النقدية التي مرّت عبر الكاشير
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="overflow-auto" style={{ maxHeight: 400 }}>
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 z-10">
-                <tr>
-                  <th className="th">الوقت</th>
-                  <th className="th">البيان</th>
-                  <th className="th">التصنيف</th>
-                  <th className="th" style={{ color: '#22c55e' }}>وارد</th>
-                  <th className="th" style={{ color: '#ef4444' }}>منصرف</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cashierTxs.map(tx => (
-                  <tr key={tx.id} className="tr">
-                    <td className="td tabular-nums" style={{ color: 'var(--txt-3)' }}>{tx.time}</td>
-                    <td className="td font-medium">{tx.description}</td>
-                    <td className="td text-2xs" style={{ color: 'var(--txt-2)' }}>{tx.mainCategoryName}</td>
-                    <td className="td tabular-nums font-bold" style={{ color: '#22c55e' }}>
-                      {tx.amountIn > 0 ? '+' + fmt(tx.amountIn) : ''}
-                    </td>
-                    <td className="td tabular-nums font-bold" style={{ color: '#ef4444' }}>
-                      {tx.amountOut > 0 ? '−' + fmt(tx.amountOut) : ''}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ═══════════════════════════════════════════════════════════
-// v2.27.0 — تقارير حسابات الإدارة (إعادة استخدام Treasury)
-// ═══════════════════════════════════════════════════════════
-function AdminReport({ month: _month }: { month: string }) {
-  return (
-    <div className="-m-4" style={{ height: 'calc(100vh - 220px)' }}>
-      <Treasury />
-    </div>
-  )
-}
-
 
 // ═══════════════════════════════════════════════════════════
 // v2.27.0 (14-Jun) — قائمة تقارير الرواتب المحفوظة
@@ -1054,7 +977,7 @@ function PayrollReportsList() {
   useEffect(() => { reload() }, [])
 
   async function handleDelete(r: PayrollRow) {
-    if (!confirm(`حذف تقرير رواتب شهر ${r.month} (${fmt(r.total_amount)} ج)؟\nسيُعاد المبلغ إلى خزينة الإدارة (عكس الخصم).`)) return
+    if (!confirm(`حذف تقرير رواتب شهر ${r.month} (${fmt(r.total_amount)} ج)؟\nسيُعاد المبلغ إلى الصندوق (عكس الخصم).`)) return
     try {
       await call(api.payroll.delete(r.id))
       show('تم حذف التقرير وإعادة المبلغ للخزينة ✓', 'success')
@@ -1089,7 +1012,7 @@ function PayrollReportsList() {
               </tr>`).join('')}
             </tbody>
             <tfoot><tr style="background:#1e293b;color:#fff;font-weight:800;">
-              <td colspan="3" style="padding:9px;text-align:right;border:1px solid #1e293b;">الإجمالي · طريقة الدفع: خزينة الإدارة</td>
+              <td colspan="3" style="padding:9px;text-align:right;border:1px solid #1e293b;">الإجمالي · طريقة الدفع: الصندوق</td>
               <td style="padding:9px;text-align:center;border:1px solid #1e293b;color:#10b981;">${fmt(r.total_amount)} ج</td>
             </tr></tfoot>
           </table>
@@ -1127,7 +1050,7 @@ function PayrollReportsList() {
               <div className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-white/5" onClick={() => setOpenId(isOpen ? null : r.id)}>
                 <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: 'rgba(59,130,246,0.15)', color: 'var(--accent)' }}>{r.month}</span>
                 <span className="text-xs" style={{ color: 'var(--txt-2)' }}>{r.employee_count} موظف</span>
-                <span className="text-xs" style={{ color: 'var(--txt-3)' }}>· خزينة الإدارة</span>
+                <span className="text-xs" style={{ color: 'var(--txt-3)' }}>· الصندوق</span>
                 <span className="tabular-nums font-bold mr-auto" style={{ fontSize: 14, color: '#10b981' }}>{fmt(r.total_amount)} ج</span>
                 <button onClick={e => { e.stopPropagation(); exportPayrollPDF(r) }} className="btn-next btn-sm" style={{ fontSize: 10, padding: '3px 10px' }}>📄 PDF</button>
                 <button onClick={e => { e.stopPropagation(); handleDelete(r) }} className="btn-sm" style={{ fontSize: 10, padding: '3px 10px', background: 'rgba(248,81,73,0.12)', color: '#f85149', border: '1px solid rgba(248,81,73,0.3)', borderRadius: 8 }}>🗑 حذف</button>
@@ -1340,9 +1263,10 @@ function AnnualCloseReport({ year }: { year: string }) {
 interface MonthCloseRow { id: number; month: string; data_json: string; created_at: string }
 
 // أسماء التصنيفات الفرعية المستثناة من سطر «مشتريات» العام لأنها مُفصَّلة كسطور مستقلة في التقرير
+// v2.33.0 — "أدوات نظافة"/"أدوات مكتبية" انتقلا لـ"مصروفات" (لم يعودا تحت "مشتريات") فأُزيلا من هذه القائمة
 const PURCHASE_BREAKOUT_SUBS = [
   'مشتريات اللحوم', 'مشتريات فراخ', 'شحن ونقل', 'هوالك منتجات',
-  'إنتاج جبن', 'إنتاج فراخ', 'إنتاج لحوم', 'أدوات تغليف', 'أدوات نظافة', 'أدوات مكتبية',
+  'إنتاج جبن', 'إنتاج فراخ', 'إنتاج لحوم', 'أدوات تغليف',
 ]
 
 function prevMonthKeyOf(month: string): string {
@@ -1361,6 +1285,12 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
   const [prevNetProfit, setPrevNetProfit] = useState<number | null>(null)
   const [logo, setLogo] = useState(''); const [companyName, setCompanyName] = useState('')
   const { show } = useToast()
+
+  // v2.33.0 — رصيد الصندوق الحقيقي (نقاط الارتكاز) لنفس الشهر — بديل حساب "fund.prev" القديم المعطَّل
+  const [treasury, setTreasury] = useState<{ prevBalance: number; movements: { running: number }[] } | null>(null)
+  useEffect(() => {
+    call(api.treasury.data(month)).then(setTreasury as (d: unknown) => void).catch(() => setTreasury(null))
+  }, [month])
 
   async function reload() {
     try { setSaved(await call(api.monthlyClose.list()) as MonthCloseRow[]) } catch (e) { console.error(e) }
@@ -1441,7 +1371,8 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
     const productWaste = byMainSub('مشتريات', 'هوالك منتجات')
 
     // ═══ مصاريف مبيعات ═══
-    const salesDiscounts = byMainSub('خصومات', 'خصومات البيع')
+    // v2.33.0 — "خصومات" دُمجت داخل "مصروفات" (خصومات البيع أُعيدت تسميتها "خصومات العملاء")
+    const salesDiscounts = byMainSub('مصروفات', 'خصومات العملاء')
     let surplus = 0, deficit = 0
     // نثق بالحقول المحفوظة على الشيفت نفسه (shift_expenses / cashier_collections) بدل إعادة
     // اشتقاقها من بنود اليومية — فهذه الحقول تُصالَح مع رقم الشيت المرجعي عند الاستيراد
@@ -1459,34 +1390,37 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
     const salesReturns = byMainSub('مرتجعات', 'مرتجع مبيعات')
 
     // ═══ مصاريف إدارية ═══
-    const wages = mainTotal('أجور')
+    // v2.33.0 — "أجور" دُمجت داخل "مصروفات" (تصنيفان فرعيان: رواتب موظفين + سلفة موظف) بعد إعادة هيكلة التصنيفات
+    const wages = byMainSub('مصروفات', 'رواتب موظفين') + byMainSub('مصروفات', 'سلفة موظف')
     const rent = byMainSub('مصروفات', 'إيجار')
     const assetDepreciation = byMainSub('مصروفات', 'اهلاك أصول')
-    const water = byMainSub('مصروفات', 'مياة')
+    const water = byMainSub('مصروفات', 'مياه') // v2.33.0 — تصحيح إملائي "مياة"→"مياه"
     const electricity = byMainSub('مصروفات', 'كهرباء')
     const insurance = byMainSub('مصروفات', 'تأمينات')
     const facilities = byMainSub('مصروفات', 'مرافق')
     const govFees = byMainSub('مصروفات', 'مصاريف حكومية')
     const phoneInternet = byMainSub('مصروفات', 'تليفون وإنترنت')
     const maintenance = byMainSub('مصروفات', 'صيانة')
-    const officeSupplies = byMainSub('مشتريات', 'أدوات مكتبية')
-    const cleaningExpenses = byMainSub('مشتريات', 'أدوات نظافة')
+    // v2.33.0 — "أدوات مكتبية"/"أدوات نظافة" انتقلا من "مشتريات" إلى "مصروفات" ("أدوات نظافة" أُعيدت تسميتها "أدوات تنظيف")
+    const officeSupplies = byMainSub('مصروفات', 'أدوات مكتبية')
+    const cleaningExpenses = byMainSub('مصروفات', 'أدوات تنظيف')
     const packagingTools = byMainSub('مشتريات', 'أدوات تغليف')
 
     // ═══ حساب الكاش أوت ═══
     const visaSales = byMainSubIn('مبيعات', 'مبيعات فيزا')
     const commissionRatio = visaSales > 0 ? (fawryCommission / visaSales) * 100 : 0
 
-    // ═══ الصندوق ═══
-    const sortedShifts = [...shifts].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime))
-    const firstShift = sortedShifts[0]
-    const fundOpening = firstShift ? Number(settingsMap[`fund.prev.${firstShift.id}`] ?? 0) * 100 : 0
+    // ═══ الصندوق (نفس منطق نقاط الارتكاز في شاشة الصندوق تماماً — انظر treasury.ts) ═══
+    const fundOpening = treasury?.prevBalance ?? 0
     const fundCashIn = shifts.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
     const fundExpenses = tx.filter(t => t.payMethod === 'management').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
-    const fundClosing = fundOpening + fundCashIn - fundExpenses
+    // آخر رصيد متراكم في حركات الشهر (يراعي تلقائياً أي نقطة ارتكاز وقعت وسط الشهر) بدل الجمع الخطّي البسيط
+    const fundClosing = treasury?.movements.length ? treasury.movements[treasury.movements.length - 1].running : fundOpening
 
     // صافي الربح — نفس معادلة لوحة المعلومات (إجمالي المبيعات − مشتريات − مصروفات − أجور) للاتساق بين الشاشتين
-    const netProfit = totalSales - mainTotal('مشتريات') - mainTotal('مصروفات') - wages
+    // v2.33.0 — "أجور" (رواتب موظفين/سلفة موظف) بقت تصنيفات فرعية جوه "مصروفات"؛ تُستبعَد هنا من إجمالي
+    // "مصروفات" العام حتى لا تُطرَح مرتين (مرة ضمن مصروفات، ومرة كـ wages منفصلة)
+    const netProfit = totalSales - mainTotal('مشتريات') - byMainNoSub('مصروفات', ['رواتب موظفين', 'سلفة موظف']) - wages
 
     // ═══ المخزون (أرصدة) — بضاعة عامة يدوية + لحوم يدوية + أرصدة فوري تراكمية (افتتاحي يدوي + ختامي محسوب) ═══
     const invStart = manualPias('mc.inv.start'), invEnd = manualPias('mc.inv.end')
@@ -1513,7 +1447,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
       fundOpening, fundExpenses, fundClosing, fundCashIn, netProfit,
       meatInvStart, meatInvEnd, basicBalOpen, basicBalClose, airBalOpen, airBalClose, cashoutBalOpen, cashoutBalClose,
     }
-  }, [shifts, allTxs, empFin, fawryMap, settingsMap, month])
+  }, [shifts, allTxs, empFin, fawryMap, settingsMap, month, treasury])
 
   async function closeMonth() {
     setBusy(true)
@@ -1536,12 +1470,12 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
         ['شحن ونقل', fmt(data.shipping) + ' ج'], ['مشتريات لحوم', fmt(data.meatPurchases) + ' ج'],
         ['مشتريات فراخ', fmt(data.poultryPurchases) + ' ج'], ['هوالك منتجات', fmt(data.productWaste) + ' ج'],
         ['— مصاريف مبيعات —', ''],
-        ['خصومات البيع', fmt(data.salesDiscounts) + ' ج'], ['اوفر', fmt(data.surplus) + ' ج'], ['عجز', fmt(data.deficit) + ' ج'],
+        ['خصومات العملاء', fmt(data.salesDiscounts) + ' ج'], ['اوفر', fmt(data.surplus) + ' ج'], ['عجز', fmt(data.deficit) + ' ج'],
         ['انتاج لحوم', fmt(data.meatProduction) + ' ج'], ['انتاج فراخ', fmt(data.poultryProduction) + ' ج'],
         ['انتاج جبن', fmt(data.cheeseProduction) + ' ج'], ['مرتجع مبيعات', fmt(data.salesReturns) + ' ج'],
         ['— مصاريف إدارية —', ''],
         ['أجور', fmt(data.wages) + ' ج'], ['ايجار', fmt(data.rent) + ' ج'], ['اهلاك أصول', fmt(data.assetDepreciation) + ' ج'],
-        ['مياة', fmt(data.water) + ' ج'], ['كهرباء', fmt(data.electricity) + ' ج'], ['تأمينات', fmt(data.insurance) + ' ج'],
+        ['مياه', fmt(data.water) + ' ج'], ['كهرباء', fmt(data.electricity) + ' ج'], ['تأمينات', fmt(data.insurance) + ' ج'],
         ['مرافق', fmt(data.facilities) + ' ج'], ['مصاريف حكومية', fmt(data.govFees) + ' ج'], ['تليفون وانترنت', fmt(data.phoneInternet) + ' ج'],
         ['صيانة', fmt(data.maintenance) + ' ج'], ['أدوات مكتبية', fmt(data.officeSupplies) + ' ج'],
         ['مصاريف نظافة', fmt(data.cleaningExpenses) + ' ج'], ['أدوات تغليف', fmt(data.packagingTools) + ' ج'],
@@ -1678,7 +1612,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
             <Line label="هوالك منتجات" value={D.productWaste} />
 
             <SectionHeader label="مصاريف مبيعات" color="#334155" bg="rgba(148,163,184,0.25)" />
-            <Line label="خصومات البيع" value={D.salesDiscounts} />
+            <Line label="خصومات العملاء" value={D.salesDiscounts} />
             <Line label="اوفر" value={D.surplus} accent="#22c55e" />
             <Line label="عجز" value={D.deficit} accent="#ef4444" />
             <Line label="انتاج لحوم" value={D.meatProduction} />
@@ -1690,7 +1624,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
             <Line label="أجور" value={D.wages} />
             <Line label="ايجار" value={D.rent} />
             <Line label="اهلاك أصول" value={D.assetDepreciation} />
-            <Line label="مياة" value={D.water} />
+            <Line label="مياه" value={D.water} />
             <Line label="كهرباء" value={D.electricity} />
             <Line label="تأمينات" value={D.insurance} />
             <Line label="مرافق" value={D.facilities} />

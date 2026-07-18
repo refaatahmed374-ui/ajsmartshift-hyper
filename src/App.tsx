@@ -20,15 +20,25 @@ import Parties from './pages/Parties'
 import About from './pages/About'
 import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
+import PageTabsBar from './components/PageTabsBar'
 import ToastContainer from './components/Toast'
+import FloatingWindowsHost from './components/FloatingWindowsHost'
 import Taskbar from './components/Taskbar'
 import UpdateManager from './components/UpdateManager'
 
-type Page =
+export type Page =
   | 'dashboard' | 'daily'    | 'reports'  | 'employees'
   | 'settings'  | 'users'    | 'treasury'
   | 'fawry'     | 'categories' | 'about'
   | 'customers' | 'suppliers' | 'importExcel'
+
+// v2.33.0 — تبويبات على مستوى كل الصفحات: أسماء العرض لكل صفحة (تُستخدم في شريط التبويبات)
+const PAGE_LABELS: Record<Page, string> = {
+  dashboard: 'لوحة المعلومات', daily: 'العمليات اليومية', reports: 'التقارير', employees: 'إدارة الموظفين',
+  settings: 'إعدادات النظام', users: 'صلاحيات المستخدمين', treasury: 'حسابات الصندوق', fawry: 'ماكينة فوري',
+  categories: 'إدارة التصنيفات', about: 'حول البرنامج', customers: 'العملاء', suppliers: 'الموردون',
+  importExcel: 'استيراد اليومية',
+}
 
 export default function App() {
   const { user }                          = useAuth()
@@ -36,13 +46,30 @@ export default function App() {
   const { load: loadLicense, readOnly }   = useLicense()
   const { load: loadPageAccess }          = usePageAccess()
   useTheme()
+  // v2.33.0 — تبويبات على مستوى كل الصفحات: أكتر من صفحة مفتوحة في نفس الوقت (زي المتصفح)،
+  // كل صفحة مفتوحة تبقى مركّبة دائمًا (لا تُفكّ) حتى لو غير نشطة — تحافظ على أي حالة فورم غير محفوظة
+  // (مثل بنود يومية في ShiftSheet) عند التنقّل بين التبويبات والعودة.
+  const [openTabs, setOpenTabs] = useState<{ page: Page; label: string }[]>([{ page: 'dashboard', label: PAGE_LABELS.dashboard }])
   const [page, setPage] = useState<Page>('dashboard')
+
+  function openPageTab(p: Page) {
+    setOpenTabs(prev => prev.some(t => t.page === p) ? prev : [...prev, { page: p, label: PAGE_LABELS[p] }])
+    setPage(p)
+  }
+  function closePageTab(p: Page) {
+    setOpenTabs(prev => {
+      const next = prev.filter(t => t.page !== p)
+      if (!next.length) return prev // امنع إغلاق آخر تبويب مفتوح
+      setPage(cur => cur === p ? next[next.length - 1].page : cur)
+      return next
+    })
+  }
 
   useEffect(() => { loadLicense() }, [])
 
   // ADR-012 v2 — تنقّل من مكوّنات عميقة (زر «إغلاق الصفحة» في الورقة الموحّدة)
   useEffect(() => {
-    const h = (e: Event) => setPage((e as CustomEvent).detail as Page)
+    const h = (e: Event) => openPageTab((e as CustomEvent).detail as Page)
     window.addEventListener('app:navigate', h)
     return () => window.removeEventListener('app:navigate', h)
   }, [])
@@ -87,14 +114,22 @@ export default function App() {
   return (
     <div className="h-screen flex flex-col overflow-hidden">
       <TopBar page={page} />
+      <PageTabsBar tabs={openTabs} active={page} onSelect={setPage} onClose={closePageTab} />
       <div className="flex flex-1 overflow-hidden">
-        <Sidebar current={page} onChange={setPage} />
-        <main className="flex-1 flex flex-col overflow-hidden bg-surface-900">
-          {pages[page]}
+        <Sidebar current={page} onChange={openPageTab} />
+        <main className="flex-1 flex flex-col overflow-hidden bg-surface-900 relative">
+          {/* كل تبويب مفتوح يبقى مركّبًا دائمًا (إخفاء بصري فقط بـ display:none) — يحافظ على حالته الداخلية */}
+          {openTabs.map(t => (
+            <div key={t.page} className="flex-1 flex flex-col overflow-hidden min-h-0"
+              style={{ display: page === t.page ? 'flex' : 'none' }}>
+              {pages[t.page]}
+            </div>
+          ))}
         </main>
       </div>
       <ToastContainer />
-      <Taskbar current={page} onNavigate={(p) => setPage(p as Page)} />
+      <FloatingWindowsHost />
+      <Taskbar current={page} onNavigate={(p) => openPageTab(p as Page)} />
       <UpdateManager />
     </div>
   )

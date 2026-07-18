@@ -20,6 +20,7 @@ import * as BackupRepo from './database/repositories/backups'
 import { backupsDir } from './paths'
 import { analyze as excelAnalyze, runImport as excelRunImport } from './services/excelImport/pipeline'
 import type { ImportOptions, ImportErrorRecord } from './services/excelImport/pipeline'
+import { buildTemplateWorkbook } from './services/excelImport/template'
 import type { IpcResult } from '../core/types'
 
 // ===== النافذة الرئيسية =====
@@ -261,6 +262,12 @@ handle('notif:unreadCount',(db)        => NotifRepo.getUnreadCount(db))
 handle('treasury:data', (db, month) => TreasuryRepo.getTreasuryData(db, month as string))
 // v2.27.0 (14-Jun) — تسويات الخزينة + الرواتب + التقفيل الشهري
 handle('treasury:addAdjustment', (db, data) => TreasuryRepo.addTreasuryAdjustment(db, data as Parameters<typeof TreasuryRepo.addTreasuryAdjustment>[1]))
+// v2.33.0 — نقطة ارتكاز مؤرَّخة لرصيد الصندوق (يدوية من الشاشة، أو من استيراد إكسيل)
+handle('treasury:addCheckpoint', (db, data) => TreasuryRepo.addTreasuryCheckpoint(db, data as Parameters<typeof TreasuryRepo.addTreasuryCheckpoint>[1]))
+// v2.33.0 — رصيد الصندوق لمدى تاريخ مرن (لوحة المعلومات: يوم/شهر/سنة/كل الفترات)
+handle('treasury:position', (db, fromDate, toDateExclusive) => TreasuryRepo.getTreasuryPosition(db, fromDate as string, toDateExclusive as string))
+// v2.33.0 — موضع شيفت معيّن على خط رصيد الصندوق (بطاقة الشيفت: رصيد قبل/بعد للتحقّق)
+handle('treasury:shiftPosition', (db, shiftId) => TreasuryRepo.getShiftTreasuryPosition(db, shiftId as number))
 handle('payroll:save',          (db, data) => TreasuryRepo.savePayrollReport(db, data as Parameters<typeof TreasuryRepo.savePayrollReport>[1]))
 handle('payroll:list',          (db)       => TreasuryRepo.listPayrollReports(db))
 handle('payroll:delete',        (db, id)   => TreasuryRepo.deletePayrollReport(db, id as number))
@@ -336,6 +343,19 @@ ipcMain.handle('excel:import', async (_e, filePath, options) => {
     await wb.xlsx.readFile(filePath as string)
     const report = excelRunImport(getDb(), wb, options as ImportOptions)
     return ok(report)
+  } catch (e) { return err((e as Error).message) }
+})
+// تحميل قالب استيراد فارغ (يملأ العميل خلاياه الفارغة بنفسه)
+ipcMain.handle('excel:downloadTemplate', async () => {
+  try {
+    const res = await dialog.showSaveDialog(mainWindow!, {
+      title: 'حفظ قالب الاستيراد', defaultPath: 'قالب-استيراد-اليومية.xlsx',
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+    })
+    if (res.canceled || !res.filePath) return ok({ canceled: true })
+    const wb = buildTemplateWorkbook()
+    await wb.xlsx.writeFile(res.filePath)
+    return ok({ canceled: false, path: res.filePath })
   } catch (e) { return err((e as Error).message) }
 })
 // تصدير سجل الأخطاء إلى Excel

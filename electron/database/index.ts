@@ -451,6 +451,95 @@ const MIGRATIONS = [
     INSERT OR IGNORE INTO import_category_map (excel_value, main_category_id, sub_category_id)
     SELECT '${excelValue}', sc.main_category_id, sc.id FROM sub_categories sc WHERE sc.name = '${subName}'
   `),
+  // v2.33.0 — نقاط ارتكاز مؤرّخة لرصيد الصندوق (تحلّ محلّ القيمة العامة الواحدة settings.treasury.opening).
+  // كل نقطة ترتبط بتاريخ، والحساب يعتمد آخر نقطة قبل تاريخ الفترة المطلوبة فقط — فلا يؤثر تصحيح لاحق على تقارير الماضي.
+  `CREATE TABLE IF NOT EXISTS treasury_checkpoints (
+     id         INTEGER PRIMARY KEY AUTOINCREMENT,
+     date       TEXT NOT NULL,
+     amount     INTEGER NOT NULL DEFAULT 0,
+     source     TEXT NOT NULL DEFAULT 'manual',
+     note       TEXT NOT NULL DEFAULT '',
+     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+   )`,
+  `CREATE INDEX IF NOT EXISTS idx_treasury_checkpoints_date ON treasury_checkpoints(date)`,
+  // ترحيل تلقائي مرة واحدة: القيمة العامة القديمة تصبح أول نقطة ارتكاز بتاريخ سنتينل أقدم من أي تاريخ حقيقي
+  `INSERT INTO treasury_checkpoints (date, amount, source, note)
+     SELECT '0000-01-01', CAST(value AS INTEGER), 'manual', 'ترحيل تلقائي من الإعداد القديم treasury.opening'
+     FROM settings WHERE key = 'treasury.opening'
+       AND NOT EXISTS (SELECT 1 FROM treasury_checkpoints)`,
+
+  // ═══ v2.33.0 — إعادة هيكلة شجرة التصنيفات: دمج "أجور"/"خصومات" داخل "مصروفات"، نقل بعض
+  // تصنيفات "مشتريات" الفرعية إلى "مصروفات"، إضافة تصنيفات فرعية جديدة، وتصنيفين رئيسيين جديدين
+  // ("التكاليف"، "حقوق الملكية"). كل خطوة UPDATE/DELETE هنا ذاتية الحراسة (تصبح بلا أثر تلقائيًا
+  // بعد أول تنفيذ، لأن شرط WHERE لن يطابق شيئًا بعدها) — بلا حاجة لحارس NOT EXISTS إضافي. ═══
+
+  // نقل + إعادة تسمية تصنيفات فرعية من "أجور"/"خصومات"/"مشتريات" إلى "مصروفات"
+  `UPDATE sub_categories SET name='رواتب موظفين', main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')
+     WHERE name='راتب موظف' AND main_category_id=(SELECT id FROM main_categories WHERE name='أجور')`,
+  `UPDATE sub_categories SET main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')
+     WHERE name='سلفة موظف' AND main_category_id=(SELECT id FROM main_categories WHERE name='أجور')`,
+  `UPDATE sub_categories SET name='خصومات العملاء', main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')
+     WHERE name='خصومات البيع' AND main_category_id=(SELECT id FROM main_categories WHERE name='خصومات')`,
+  `UPDATE sub_categories SET name='أدوات تنظيف', main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')
+     WHERE name='أدوات نظافة' AND main_category_id=(SELECT id FROM main_categories WHERE name='مشتريات')`,
+  `UPDATE sub_categories SET main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')
+     WHERE name='أدوات مكتبية' AND main_category_id=(SELECT id FROM main_categories WHERE name='مشتريات')`,
+
+  // إعادة تصنيف أي معاملة تاريخية مربوطة مباشرة بـ"أجور"/"خصومات" كتصنيف رئيسي (العمود مستقل عن الفرعي)
+  `UPDATE transactions SET main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')
+     WHERE main_category_id IN (SELECT id FROM main_categories WHERE name IN ('أجور','خصومات'))`,
+
+  // حذف التصنيفين الرئيسيين القديمين — آمن الآن بعد نقل كل الفرعيات والمعاملات المرتبطة بهما
+  `DELETE FROM main_categories WHERE name IN ('أجور','خصومات')`,
+
+  // تصحيح إملائي بسيط
+  `UPDATE sub_categories SET name='مياه' WHERE name='مياة'
+     AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+
+  // تصنيفات فرعية جديدة تحت "مصروفات"
+  ...['ضرائب', 'إنترنت', 'صيانة أجهزة', 'أكياس', 'تغليف', 'دعاية', 'تسويق', 'خسائر', 'غرامات', 'فروق جرد', 'ديون معدومة']
+    .map((name, i) => `
+      INSERT INTO sub_categories (main_category_id, name, sort_order)
+        SELECT id, '${name}', ${10 + i} FROM main_categories
+        WHERE name='مصروفات' AND NOT EXISTS (
+          SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
+        )`),
+
+  // تصنيفات فرعية جديدة تحت "مبيعات"
+  ...['مبيعات نقدي', 'مبيعات رصيد فوري', 'مبيعات تطبيقات', 'أرباح بيع أصول', 'إيرادات متنوعة']
+    .map((name, i) => `
+      INSERT INTO sub_categories (main_category_id, name, sort_order)
+        SELECT id, '${name}', ${5 + i} FROM main_categories
+        WHERE name='مبيعات' AND NOT EXISTS (
+          SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
+        )`),
+
+  // تصنيفات فرعية جديدة تحت "مشتريات"
+  ...['بقالة', 'دواجن', 'ألبان', 'سجاير', 'خضار', 'رصيد فوري', 'استبدالات كوبونات']
+    .map((name, i) => `
+      INSERT INTO sub_categories (main_category_id, name, sort_order)
+        SELECT id, '${name}', ${20 + i} FROM main_categories
+        WHERE name='مشتريات' AND NOT EXISTS (
+          SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
+        )`),
+
+  // تصنيفان رئيسيان جديدان بالكامل: "التكاليف" و"حقوق الملكية" (بند تصنيف عادي بلا ربط بميزانية حقيقية)
+  `INSERT OR IGNORE INTO main_categories (name, color, sort_order, kind) VALUES ('التكاليف', '#0ea5e9', 9, 'expense')`,
+  `INSERT OR IGNORE INTO main_categories (name, color, sort_order, kind) VALUES ('حقوق الملكية', '#64748b', 10, 'misc')`,
+  ...['تكلفة البقالة', 'تكلفة الألبان', 'تكلفة اللحوم', 'تكلفة الدواجن', 'تكلفة الخضار']
+    .map((name, i) => `
+      INSERT INTO sub_categories (main_category_id, name, sort_order)
+        SELECT id, '${name}', ${i + 1} FROM main_categories
+        WHERE name='التكاليف' AND NOT EXISTS (
+          SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
+        )`),
+  ...['رأس المال', 'المسحوبات الشخصية', 'الأرباح المحتجزة', 'أرباح السنة الحالية']
+    .map((name, i) => `
+      INSERT INTO sub_categories (main_category_id, name, sort_order)
+        SELECT id, '${name}', ${i + 1} FROM main_categories
+        WHERE name='حقوق الملكية' AND NOT EXISTS (
+          SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
+        )`),
 ]
 
 let _db: Database.Database | null = null

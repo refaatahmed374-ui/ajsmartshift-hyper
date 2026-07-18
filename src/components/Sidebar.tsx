@@ -5,12 +5,7 @@ import { useShift } from '../store/shift'
 import { useLicense } from '../store/license'
 import { usePageAccess } from '../store/pageAccess'
 import { api, call } from '../lib/api'
-
-type Page =
-  | 'dashboard' | 'daily' | 'reports' | 'employees'
-  | 'settings'  | 'users' | 'backup'  | 'treasury'
-  | 'fawry'     | 'categories' | 'about'
-  | 'customers' | 'suppliers' | 'importExcel'
+import type { Page } from '../App'
 
 interface NavItem {
   id:    Page
@@ -44,6 +39,7 @@ const NAV: NavItem[] = [
   { id: 'employees',     label: 'إدارة الموظفين',     icon: <Icons.Employees  size={17}/>, roles: ['manager','supervisor'] },
   { id: 'users',         label: 'صلاحيات المستخدمين', icon: <Icons.User       size={17}/>, roles: ['manager'] },
   { id: 'reports',       label: 'التقارير',           icon: <Icons.Reports    size={17}/>, roles: ['manager','supervisor'] },
+  { id: 'treasury',      label: 'حسابات الصندوق',     icon: <Icons.Fund       size={17}/>, roles: ['manager','supervisor'] },
   { id: 'importExcel',   label: 'استيراد اليومية',    icon: <Icons.Download   size={17}/>, roles: ['manager'] },
   { id: 'categories',    label: 'إدارة التصنيفات',    icon: <Icons.Plus       size={17}/>, roles: ['manager'] },
   { id: 'settings',      label: 'إعدادات النظام',     icon: <Icons.Settings   size={17}/>, roles: ['manager'] },

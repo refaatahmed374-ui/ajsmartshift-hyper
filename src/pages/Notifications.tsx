@@ -26,7 +26,7 @@ const CODE_STATS = {
 const CURRENT_FEATURES = [
   { icon: '📋', label: 'نظام يومية متسلسل (5 مراحل)', color: '#3b82f6' },
   { icon: '📡', label: 'تقفيل ماكينة فوري الكامل', color: '#8b5cf6' },
-  { icon: '💰', label: 'حسابات خزينة الإدارة', color: '#f59e0b' },
+  { icon: '💰', label: 'حسابات الصندوق', color: '#f59e0b' },
   { icon: '👥', label: 'إدارة الموظفين + الرواتب', color: '#06b6d4' },
   { icon: '🧾', label: 'العملاء والموردون + كشف الحساب', color: '#10b981' },
   { icon: '📊', label: '9 أنواع تقارير + PDF', color: '#ef4444' },

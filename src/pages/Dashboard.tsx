@@ -41,6 +41,17 @@ export default function Dashboard() {
   const [filterMonth, setFilterMonth] = useState(now.getMonth() + 1)
   const [filterDay, setFilterDay] = useState(now.toISOString().slice(0, 10))
 
+  // v2.33.0 — رصيد الصندوق الحقيقي (نقاط الارتكاز) لمدى الفترة المعروضة — بديل حساب "fund.prev" القديم المعطَّل
+  const [treasuryPos, setTreasuryPos] = useState({ opening: 0, incoming: 0, outgoing: 0, closing: 0 })
+  useEffect(() => {
+    let from: string, toExclusive: string
+    if (filterMode === 'all') { from = '0000-01-01'; toExclusive = '9999-12-31' }
+    else if (filterMode === 'year') { from = `${filterYear}-01-01`; toExclusive = `${filterYear + 1}-01-01` }
+    else if (filterMode === 'month') { from = `${filterYear}-${String(filterMonth).padStart(2, '0')}-01`; toExclusive = new Date(filterYear, filterMonth, 1).toISOString().slice(0, 10) }
+    else { from = filterDay; const d = new Date(filterDay); d.setDate(d.getDate() + 1); toExclusive = d.toISOString().slice(0, 10) }
+    call(api.treasury.position(from, toExclusive)).then(setTreasuryPos as (d: unknown) => void).catch(() => {})
+  }, [filterMode, filterYear, filterMonth, filterDay])
+
   async function loadAll() {
     setLoading(true)
     try {
@@ -122,8 +133,10 @@ export default function Dashboard() {
     const prevSales = allShifts.filter(s => inPrev(s.date)).reduce((a, s) => a + saleOf(s), 0)
     const purchases = outByMain('مشتريات')
     const meatPurchases = outByMainSub('مشتريات', 'مشتريات اللحوم')
-    const expenses = outByMain('مصروفات')
-    const wages = outByMain('أجور')
+    // v2.33.0 — "أجور" دُمجت داخل "مصروفات" (رواتب موظفين/سلفة موظف كتصنيفات فرعية)؛ تُستبعَد من
+    // إجمالي "مصروفات" العام وتُحسب منفردة هنا لتفادي احتسابها مرتين في totalExpensesAll تحت
+    const expenses = tx.filter(t => t.mainCategoryName === 'مصروفات' && t.subCategoryName !== 'رواتب موظفين' && t.subCategoryName !== 'سلفة موظف').reduce((a, t) => a + t.amountOut, 0)
+    const wages = outByMainSub('مصروفات', 'رواتب موظفين') + outByMainSub('مصروفات', 'سلفة موظف')
     const collections = tx.filter(t => t.mainCategoryName === 'تحصيل').reduce((a, t) => a + t.amountIn, 0)
     const visa = inBySub('مبيعات فيزا')
     const credit = inBySub('مبيعات آجل')
@@ -153,14 +166,6 @@ export default function Dashboard() {
     const custodyAdd  = cur.reduce((a, s) => a + (custodyMap[s.id]?.addFromFund ?? 0), 0)
     const custodyPaid = cur.reduce((a, s) => a + (custodyMap[s.id]?.managementPaid ?? 0), 0)
 
-    // حساب الصندوق (تجميع الفترة) — رصيد أول أقدم شيفت بالفترة + الوارد (نقدية الكاشير) − المصروفات (مدفوعات الإدارة)
-    const sortedCur = [...cur].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime))
-    const firstShift = sortedCur[0]
-    const fundOpening = firstShift ? Number(settingsMap[`fund.prev.${firstShift.id}`] ?? 0) * 100 : 0
-    const fundIn  = cashierCash
-    const fundOut = custodyPaid
-    const fundClosing = fundOpening + fundIn - fundOut
-
     // حساب الكاشير (تجميع الفترة)
     const cashierPayVal = payDist.find(d => d.method === 'cashier')?.val ?? 0
     const cashierNet = cashierPayVal - custodyPaid
@@ -185,7 +190,7 @@ export default function Dashboard() {
       cur, sales, posOnly, fawryOnly, prevSales, purchases, meatPurchases, expenses, wages,
       collections, visa, credit, delivery, deliveryCount, meatSales, fawryCommissionProfit, cashierCash,
       surplus, deficit, balanced, net, best, worst, payDist, itemsCount: tx.length,
-      custodyAdd, custodyPaid, fundOpening, fundIn, fundOut, fundClosing, cashierPayVal, cashierNet,
+      custodyAdd, custodyPaid, cashierPayVal, cashierNet,
       purchaseInvoiceCount, avgInvoice, maxInvoice,
       totalRevenue, totalExpensesAll, netProfit, profitMarginPct,
       avgTxValue, avgCashPerShift,
@@ -340,10 +345,10 @@ export default function Dashboard() {
             </TopAccountCard>
 
             <TopAccountCard title="حساب الصندوق" icon={<Icons.Backup size={12} />} color="#22c55e">
-              <Stat label="رصيد البداية" value={`${fmt(M.fundOpening)} ج`} color="var(--txt-1)" />
-              <Stat label="الوارد" value={`${fmt(M.fundIn)} ج`} color="#22c55e" />
-              <Stat label="المنصرف" value={`${fmt(M.fundOut)} ج`} color="#ef4444" />
-              <Stat label="الرصيد الحالي" value={`${fmt(M.fundClosing)} ج`} color="#22c55e" />
+              <Stat label="رصيد البداية" value={`${fmt(treasuryPos.opening)} ج`} color="var(--txt-1)" />
+              <Stat label="الوارد" value={`${fmt(treasuryPos.incoming)} ج`} color="#22c55e" />
+              <Stat label="المنصرف" value={`${fmt(treasuryPos.outgoing)} ج`} color="#ef4444" />
+              <Stat label="الرصيد الحالي" value={`${fmt(treasuryPos.closing)} ج`} color="#22c55e" />
             </TopAccountCard>
 
             <TopAccountCard title="مؤشرات عامة" icon={<Icons.Records size={12} />} color="#a78bfa" cols={3}>

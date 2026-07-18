@@ -10,7 +10,7 @@
  */
 import type { Workbook, Worksheet, Cell } from 'exceljs'
 import { normalizeArabic, normalizeValue } from './normalize'
-import type { ParseResult, RawShiftBlock, RawTransaction, RawFawry, RawClosing, WorkbookParser } from './types'
+import type { ParseResult, RawShiftBlock, RawTransaction, RawFawry, RawClosing, RawOpeningBalance, WorkbookParser } from './types'
 import type { ShiftType } from '../../../core/types'
 
 const HDR_DATE = 'التاريخ'     // علامة بداية الكتلة (العمود A في صف الترويسة)
@@ -41,6 +41,11 @@ const CLOSING_LABELS: Record<string, keyof RawClosing> = {
   [nv('نقدية')]: 'cashierRemaining',        // نقدية الكاشير
   [nv('كاشير')]: 'cashierExpenses',         // مصروفات الكاشير (للتحقّق)
 }
+// خلية على مستوى الملف كله (لا الكتلة) — تُقرأ من نفس عمودي التقفيل G/H، وتُعتمد نقطة ارتكاز لرصيد الصندوق.
+// "رصيد سابق" هو المسمّى الطبيعي الموجود فعلاً في قسم «الصندوق» بقالب حورس الأصلي (يتكرّر في كل شيفت)،
+// و"رصيد اول الصندوق" مسمّى بديل لمن لا يستخدم قسم الصندوق. يُؤخَذ أول ظهور فقط (أول شيفت بالملف) ويُتجاهَل الباقي
+// (تكرار "رصيد سابق" في كل شيفت لاحق أمر متوقَّع وليس تعارضاً — رصيدنا الخاص يُكمل الحساب من نقطة الارتكاز الأولى).
+const OPENING_BALANCE_LABELS = new Set([nv('رصيد اول الصندوق'), nv('رصيد سابق')])
 
 /** الصيغ المطبَّعة لأنواع الشيفت (تُحسب مرة). */
 const SHIFT_MORNING = normalizeArabic('صباحي')
@@ -111,8 +116,8 @@ function toISO(v: unknown): string | null {
   return null
 }
 
-/** تحليل ورقة واحدة إلى كتل. */
-function parseSheet(ws: Worksheet, warnings: string[]): RawShiftBlock[] {
+/** تحليل ورقة واحدة إلى كتل. openingFound تُجمَّع فيها كل ظهورات خلية "رصيد أول الصندوق" عبر كل الأوراق. */
+function parseSheet(ws: Worksheet, warnings: string[], openingFound: RawOpeningBalance[]): RawShiftBlock[] {
   const blocks: RawShiftBlock[] = []
   const maxRow = ws.rowCount
   let r = 1
@@ -166,8 +171,15 @@ function parseSheet(ws: Worksheet, warnings: string[]): RawShiftBlock[] {
       for (let er = r + 2; er < blockEnd; er++) {
         const fKey = FAWRY_LABELS[normalizeValue(cellStr(ws, er, 5))]
         if (fKey) { const v = cellNum(ws, er, 6); if (v !== null) block.fawry[fKey] = v }
-        const cKey = CLOSING_LABELS[normalizeValue(cellStr(ws, er, 7))]
+        const closingLabel = normalizeValue(cellStr(ws, er, 7))
+        const cKey = CLOSING_LABELS[closingLabel]
         if (cKey) { const v = cellNum(ws, er, 8); if (v !== null) block.closing[cKey] = v }
+        // "رصيد أول الصندوق" أو "رصيد سابق" — نقطة ارتكاز الصندوق. تُؤخَذ فقط من أول شيفت بالملف (أول ظهور)،
+        // وتُتجاهَل كل الظهورات اللاحقة (متوقَّعة وطبيعية مع "رصيد سابق" المتكرر في كل شيفت — ليست تعارضاً)
+        if (openingFound.length === 0 && OPENING_BALANCE_LABELS.has(closingLabel) && block.dateISO) {
+          const v = cellNum(ws, er, 8)
+          if (v !== null) openingFound.push({ amountPiastres: Math.round(v * 100), dateISO: block.dateISO, sheetName: ws.name, row: er })
+        }
       }
 
       blocks.push(block)
@@ -186,16 +198,22 @@ export const horusBlockParser: WorkbookParser = {
   parse(workbook: Workbook): ParseResult {
     const warnings: string[] = []
     const blocks: RawShiftBlock[] = []
+    const openingFound: RawOpeningBalance[] = []
     let sheetsScanned = 0
     workbook.eachSheet((ws) => {
       sheetsScanned++
-      blocks.push(...parseSheet(ws, warnings))
+      blocks.push(...parseSheet(ws, warnings, openingFound))
     })
+
+    // نقطة ارتكاز الصندوق (رصيد أول الصندوق/رصيد سابق) — أول ظهور فقط عبر كل الملف (انظر الحارس داخل parseSheet)
+    const openingBalance: RawOpeningBalance | undefined = openingFound[0]
+
     return {
       blocks,
       totalTransactions: blocks.reduce((s, b) => s + b.transactions.length, 0),
       sheetsScanned,
       warnings,
+      openingBalance,
     }
   },
 }

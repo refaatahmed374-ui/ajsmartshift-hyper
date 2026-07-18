@@ -14,7 +14,7 @@ import type { Transaction, Employee, User } from '../../core/types'
 type PayMethod = 'cashier' | 'management'
 
 const PAY_LABELS: Record<PayMethod, string> = {
-  cashier: 'كاشير', management: 'خزينة الإدارة',
+  cashier: 'كاشير', management: 'الصندوق',
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -566,9 +566,9 @@ export default function Daily() {
   }
 
   // ═══ v2.27.0 (15-Jun) — شرط تنشيط خلية الموظف ═══
-  // فقط عند التصنيف الرئيسي "أجور" أو "راتب شهري"
+  // فقط عند بند رواتب/سلف الموظفين — v2.33.0: "أجور" دُمجت تصنيفات فرعية جوه "مصروفات" فبقينا نتحقّق بالفرعي
   function isEmployeeEnabled(d: DraftTx): boolean {
-    return d.mainCategoryName === 'أجور' || d.mainCategoryName === 'راتب شهري'
+    return d.subCategoryName === 'رواتب موظفين' || d.subCategoryName === 'سلفة موظف' || d.mainCategoryName === 'راتب شهري'
   }
 
   async function handleDeleteTx(id: number) {
@@ -936,7 +936,7 @@ export default function Daily() {
                       حساب العهدة (الإدارة)
                     </div>
                     <div style={{ fontSize: 10.5, color: 'var(--txt-3)' }}>
-                      المبالغ المخصصة لخزينة الإدارة من النقدية
+                      المبالغ المخصصة لالصندوق من النقدية
                     </div>
                   </div>
                 </div>
@@ -975,7 +975,7 @@ export default function Daily() {
                         {fmt(managementOut)} <span style={{ fontSize: 10, marginRight: 4 }}>ج</span>
                       </div>
                       <div style={{ fontSize: 10, color: 'var(--txt-3)', marginTop: 4 }}>
-                        ↳ من بنود "خزينة الإدارة"
+                        ↳ من بنود "الصندوق"
                       </div>
                     </div>
                     {/* باقي العهدة */}

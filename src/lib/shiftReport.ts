@@ -8,7 +8,7 @@ import type { Shift, Transaction, ShiftFawry, ShiftCustody } from '../../core/ty
 import { APP_VERSION } from '../version'
 
 const PAY_LABELS: Record<string, string> = {
-  cashier: 'كاشير', management: 'خزينة الإدارة', credit: 'آجل', visa: 'فيزا',
+  cashier: 'كاشير', management: 'الصندوق', credit: 'آجل', visa: 'فيزا',
 }
 
 export async function generateShiftReportPDF(s: Shift): Promise<void> {

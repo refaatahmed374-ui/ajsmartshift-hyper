@@ -92,7 +92,7 @@ export default function Employees() {
         mode: getSalaryMode(f.employeeId),
         amount: dueSalary(f),
       }))
-      // خصم الإجمالي من خزينة الإدارة
+      // خصم الإجمالي من الصندوق
       await call(api.treasury.addAdjustment({
         date: todayISO(),
         type: 'salary_payout',
@@ -727,7 +727,7 @@ export default function Employees() {
               <span style={{ color: '#3b82f6', fontWeight: 700 }}>الراتب المستحق (بالساعة)</span> = صافي بالساعة − (أيام الجزاء × ساعات اليوم × أجر الساعة)
             </div>
             <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--inner-border)' }}>
-              📍 <b>السلف</b>: من بنود اليومية بتصنيف <b>"أجور"</b> مع تحديد الموظف
+              📍 <b>السلف</b>: من بنود اليومية بتصنيف <b>"مصروفات" ← "سلفة موظف"</b> مع تحديد الموظف
               <br />
               📍 <b>الجزاءات</b>: من <b>تبويب تسجيل الحضور</b> — اضغط زر "جزاء" بجوار الموظف (نصف يوم / يوم / 3 أيام كحد أقصى)
               <br />
@@ -750,7 +750,7 @@ export default function Employees() {
                 <div>
                   <div className="font-bold text-base" style={{ color: 'var(--txt-1)' }}>تسليم رواتب الموظفين</div>
                   <div className="text-xs" style={{ color: 'var(--txt-3)' }}>
-                    {month} · الإجمالي: <b style={{ color: 'var(--accent)' }}>{fmt(payrollTotal)} ج</b> · من خزينة الإدارة
+                    {month} · الإجمالي: <b style={{ color: 'var(--accent)' }}>{fmt(payrollTotal)} ج</b> · من الصندوق
                   </div>
                 </div>
               </div>
@@ -815,7 +815,7 @@ export default function Employees() {
                     إجمالي <b style={{ color: 'var(--accent)' }}>{fmt(payrollTotal)} ج</b> لـ {financials.filter(f => dueSalary(f) > 0).length} موظف
                   </div>
                   <div className="text-xs" style={{ color: 'var(--txt-3)' }}>
-                    سيتم خصم المبلغ من خزينة الإدارة وحفظ تقرير في "تقارير الموظفين"
+                    سيتم خصم المبلغ من الصندوق وحفظ تقرير في "تقارير الموظفين"
                   </div>
                 </div>
               )}

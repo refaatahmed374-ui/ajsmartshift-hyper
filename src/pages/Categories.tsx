@@ -99,6 +99,7 @@ export default function Categories() {
       }
       setMainModal(false)
       await load()
+      window.dispatchEvent(new CustomEvent('categories:changed'))
     } catch (e) { show((e as Error).message, 'error') }
     finally { setSavingMain(false) }
   }
@@ -117,6 +118,7 @@ export default function Categories() {
       }
       setSubModal(false)
       await load()
+      window.dispatchEvent(new CustomEvent('categories:changed'))
     } catch (e) { show((e as Error).message, 'error') }
     finally { setSavingSub(false) }
   }
@@ -131,6 +133,7 @@ export default function Categories() {
       show('تم حذف التصنيف الرئيسي', 'success')
       setDeleteMain(null)
       await load()
+      window.dispatchEvent(new CustomEvent('categories:changed'))
     } catch (e) { show((e as Error).message, 'error') }
     finally { setDeleting(false) }
   }
@@ -145,6 +148,7 @@ export default function Categories() {
       show('تم حذف التصنيف الفرعي', 'success')
       setDeleteSub(null)
       await load()
+      window.dispatchEvent(new CustomEvent('categories:changed'))
     } catch (e) { show((e as Error).message, 'error') }
     finally { setDeleting(false) }
   }

@@ -51,12 +51,21 @@ export interface RawShiftBlock {
   closing: RawClosing        // العمودان G/H
 }
 
+/** رصيد أول الصندوق كما أدخله العميل — قيمة على مستوى الملف كله، لا الكتلة (خلية "رصيد أول الصندوق"). */
+export interface RawOpeningBalance {
+  amountPiastres: number
+  dateISO: string            // تاريخ الكتلة التي وُجدت فيها الخلية — يُصبح تاريخ نقطة الارتكاز
+  sheetName: string
+  row: number
+}
+
 /** ناتج تحليل المصنّف بالكامل. */
 export interface ParseResult {
   blocks: RawShiftBlock[]
   totalTransactions: number
   sheetsScanned: number
   warnings: string[]         // مشاكل غير قاتلة (كاشير فارغ، نوع شيفت مجهول…)
+  openingBalance?: RawOpeningBalance   // إن وُجدت خلية "رصيد أول الصندوق" في الملف (أول ظهور فقط)
 }
 
 /** تعيين اتجاه المعاملة يُشتقّ من «نوع الفئة» لا من قاعدة التعيين (decision #5). */

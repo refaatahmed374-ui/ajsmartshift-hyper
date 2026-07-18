@@ -59,5 +59,5 @@ export function roleLabel(r: string): string {
 }
 
 export function payMethodLabel(p: string): string {
-  return ({ cashier: 'كاشير', management: 'خزينة الإدارة' } as Record<string, string>)[p] ?? p
+  return ({ cashier: 'كاشير', management: 'الصندوق' } as Record<string, string>)[p] ?? p
 }

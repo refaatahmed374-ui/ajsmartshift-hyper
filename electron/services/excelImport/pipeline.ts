@@ -18,6 +18,7 @@ import { validateTransaction, type MappedTransaction } from './validator'
 import { buildDuplicateIndex, isDuplicate, findPriorImport, type PriorImport } from './duplicateChecker'
 import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses } from '../../database/repositories/shifts'
 import { addTransactionsBatch } from '../../database/repositories/transactions'
+import { addTreasuryCheckpoint, getBalanceAsOf } from '../../database/repositories/treasury'
 import type { ShiftType, ShiftFawry } from '../../../core/types'
 import type { RawFawry } from './types'
 
@@ -57,6 +58,8 @@ export interface AnalysisResult {
   unknownCategories: UnknownCategory[]
   warnings: string[]
   priorImport: PriorImport | null
+  // رصيد أول الصندوق المكتشف في الملف (إن وُجدت خليته) + ما كان سيُحسب تلقائياً عند نفس التاريخ للمقارنة
+  openingBalance?: { amountPiastres: number; dateISO: string; calculatedPiastres: number }
 }
 
 /** قرار تعيين فئة مجهولة: ربط بفئة، أو تخطٍّ (يُسجَّل). */
@@ -85,6 +88,8 @@ export interface ImportReport {
   shiftsCreated: number
   durationMs: number
   errors: ImportErrorRecord[]
+  // نقطة ارتكاز الصندوق المُنشأة من خلية "رصيد أول الصندوق" في الملف (إن وُجدت)
+  openingCheckpoint?: { date: string; amountPiastres: number; calculatedPiastres: number; mismatch: boolean }
 }
 
 const START_TIME: Record<ShiftType, string> = { morning: '08:00', evening: '16:00', between: '12:00' }
@@ -125,6 +130,11 @@ export function analyze(db: Database, workbook: Workbook, fileName: string): Ana
     unknownCategories: Array.from(unknownMap.values()).sort((a, b) => b.count - a.count),
     warnings: parsed.warnings,
     priorImport: findPriorImport(db, fileName),
+    openingBalance: parsed.openingBalance ? {
+      amountPiastres: parsed.openingBalance.amountPiastres,
+      dateISO: parsed.openingBalance.dateISO,
+      calculatedPiastres: getBalanceAsOf(db, parsed.openingBalance.dateISO),
+    } : undefined,
   }
 }
 
@@ -166,6 +176,22 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
     // فهرس التكرار — استعلام واحد لكل تواريخ الملف بدل استعلام لكل معاملة
     const dupIdx = buildDuplicateIndex(db, parsed.blocks.map(b => b.dateISO).filter((d): d is string => !!d))
 
+    // فهرس الشيفتات المستوردة سابقاً بنفس تواريخ الملف — يمنع إنشاء شيفت مكرر عند إعادة استيراد نفس الملف/الفترة
+    // (بدون هذا، إعادة الاستيراد كانت تُنشئ شيفتات جديدة بنفس نقدية الكاشير رغم أن معاملاتها الفردية تُكتشف كمكررة،
+    //  فيتضخّم "المضاف للخزينة" في حساب الصندوق مع كل إعادة استيراد)
+    const importedShiftKeys = new Set<string>()
+    {
+      const dates = Array.from(new Set(parsed.blocks.map(b => b.dateISO).filter((d): d is string => !!d)))
+      if (dates.length) {
+        const placeholders = dates.map(() => '?').join(',')
+        const rows = db.prepare(`
+          SELECT date, cashier_user_id AS cashierUserId, type
+          FROM shifts WHERE date IN (${placeholders}) AND note = 'مستورد من Excel'
+        `).all(...dates) as { date: string; cashierUserId: number; type: string }[]
+        for (const r of rows) importedShiftKeys.add(`${r.date}|${r.cashierUserId}|${r.type}`)
+      }
+    }
+
     // 3) لكل كتلة → شيفت + معاملات
     for (const b of parsed.blocks) {
       const shiftType: ShiftType = b.shiftType ?? 'morning'
@@ -174,6 +200,14 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
         report.failed += b.transactions.length
         report.errors.push({ sheet: b.sheetName, row: b.headerRow, type: 'invalid_block',
           original: `${b.dateRaw}/${b.cashierRaw}`, message: !cashierUserId ? 'كاشير غير مُعيّن' : 'تاريخ غير صالح' })
+        continue
+      }
+
+      if (importedShiftKeys.has(`${b.dateISO}|${cashierUserId}|${shiftType}`)) {
+        report.duplicates += b.transactions.length
+        report.errors.push({ sheet: b.sheetName, row: b.headerRow, type: 'duplicate_shift',
+          original: `${b.dateRaw}/${b.cashierRaw}`,
+          message: 'شيفت مستورد مسبقاً بنفس التاريخ والكاشير ونوع الشيفت — تم تخطّيه لمنع الازدواج' })
         continue
       }
 
@@ -270,7 +304,28 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
       updateShiftStatus(db, shift.id, 'review', opts.userId)
     }
 
-    // 4) سجل الاستيراد
+    // 4) رصيد أول الصندوق المُدخل يدوياً في الملف (إن وُجد) → نقطة ارتكاز جديدة مؤرَّخة لحساب الصندوق.
+    // القيمة المُدخلة تُعتمد دائماً كتصحيح شامل (تُلغي الحاجة لإعادة حساب أي تسويات يدوية قبلها) — غير حاجزة،
+    // فقط تُسجَّل كتحذير غير قاتل إن اختلفت بشكل ملحوظ عمّا كان النظام سيحسبه تلقائياً عند نفس التاريخ.
+    if (parsed.openingBalance) {
+      const { dateISO, amountPiastres } = parsed.openingBalance
+      const calculated = getBalanceAsOf(db, dateISO)
+      const mismatch = Math.abs(calculated - amountPiastres) > 100
+      if (mismatch) {
+        report.errors.push({
+          sheet: parsed.openingBalance.sheetName, row: parsed.openingBalance.row, type: 'opening_balance_mismatch',
+          original: `مُدخل ${amountPiastres / 100} ≠ محسوب تلقائياً ${calculated / 100}`,
+          message: 'رصيد أول الصندوق المُدخل يختلف عن الرصيد الذي كان سيُحسب تلقائياً بتاريخه — تم اعتماد القيمة المُدخلة كتصحيح',
+        })
+      }
+      addTreasuryCheckpoint(db, {
+        date: dateISO, amount: amountPiastres, source: 'import',
+        note: `مستورد من ${opts.fileName}`,
+      })
+      report.openingCheckpoint = { date: dateISO, amountPiastres, calculatedPiastres: calculated, mismatch }
+    }
+
+    // 5) سجل الاستيراد
     db.prepare(`
       INSERT INTO import_history (user_id, user_name, file_name, sheets, total, imported, failed, duplicates, skipped, duration_ms)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

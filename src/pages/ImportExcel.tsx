@@ -27,6 +27,7 @@ export default function ImportExcel() {
   const [cashierMap, setCashierMap] = useState<Record<string, number>>({})
   const [catDecisions, setCatDecisions] = useState<Record<string, CategoryDecision>>({})
   const [report, setReport] = useState<ImportReport | null>(null)
+  const [ackMismatch, setAckMismatch] = useState(false)
 
   async function loadRefData() {
     const [u, m, s] = await Promise.all([
@@ -82,9 +83,18 @@ export default function ImportExcel() {
         categoryDecisions: catDecisions,
       }
       const rep = await call<ImportReport>(api.excel.import(fileInfo.filePath, options))
-      setReport(rep); setStep('report')
+      setReport(rep); setAckMismatch(false); setStep('report')
       toast.show(`تم استيراد ${rep.imported} معاملة`, 'success')
     } catch (e) { toast.show((e as Error).message, 'error'); setStep('preview') }
+    finally { setBusy(false) }
+  }
+
+  async function downloadTemplate() {
+    setBusy(true)
+    try {
+      const r = await call<{ canceled: boolean; path?: string }>(api.excel.downloadTemplate())
+      if (!r.canceled) toast.show('تم حفظ القالب الفارغ ✓', 'success')
+    } catch (e) { toast.show((e as Error).message, 'error') }
     finally { setBusy(false) }
   }
 
@@ -126,11 +136,21 @@ export default function ImportExcel() {
                 اختر ملف Excel (.xlsx) يحتوي يوميات الشيفتات. يقرأ النظام جدول المعاملات فقط،
                 ويتجاهل أقسام فوري والعهدة تلقائياً.
               </p>
-              <button onClick={pickFile} disabled={busy}
-                className="px-6 py-3 rounded-xl font-bold text-white"
-                style={{ background: 'linear-gradient(90deg,#3b82f6,#8b5cf6)', opacity: busy ? 0.6 : 1 }}>
-                {busy ? 'جارٍ القراءة…' : '📂 اختر ملف Excel'}
-              </button>
+              <div className="flex items-center justify-center gap-3">
+                <button onClick={pickFile} disabled={busy}
+                  className="px-6 py-3 rounded-xl font-bold text-white"
+                  style={{ background: 'linear-gradient(90deg,#3b82f6,#8b5cf6)', opacity: busy ? 0.6 : 1 }}>
+                  {busy ? 'جارٍ القراءة…' : '📂 اختر ملف Excel'}
+                </button>
+                <button onClick={downloadTemplate} disabled={busy}
+                  className="px-6 py-3 rounded-xl font-bold text-sm"
+                  style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--txt-1)', opacity: busy ? 0.6 : 1 }}>
+                  📄 تحميل قالب فارغ
+                </button>
+              </div>
+              <p className="mt-3 text-xs" style={{ color: 'var(--txt-3)' }}>
+                لو أول مرة تستورد بيانات، حمّل القالب الفارغ واملأ خلاياه الفارغة فقط (مع تعليمات التعبئة في الورقة الثانية).
+              </p>
             </div>
           </Card>
         )}
@@ -220,6 +240,21 @@ export default function ImportExcel() {
         {step === 'preview' && analysis && (
           <Card>
             <h3 className="font-bold mb-3">المعاينة قبل الاستيراد</h3>
+            {analysis.openingBalance ? (
+              (() => {
+                const ob = analysis.openingBalance!
+                const mismatch = Math.abs(ob.amountPiastres - ob.calculatedPiastres) > 100
+                return (
+                  <Banner type={mismatch ? 'warning' : 'success'}>
+                    💰 رصيد أول الصندوق المكتشف في الملف: <b>{(ob.amountPiastres / 100).toLocaleString('ar-EG')} ج</b> بتاريخ {ob.dateISO}.
+                    سيُعتمد كنقطة ارتكاز جديدة لحساب الصندوق من هذا التاريخ فصاعداً.
+                    {mismatch && <> ⚠️ يختلف عن الرصيد المحسوب تلقائياً ({(ob.calculatedPiastres / 100).toLocaleString('ar-EG')} ج) — سيُعتمد كتصحيح، راجع البيانات إن لم يكن هذا مقصوداً.</>}
+                  </Banner>
+                )
+              })()
+            ) : (
+              <Banner type="warning">لم يتم العثور على خلية "رصيد أول الصندوق" في الملف — سيُستخدم آخر رصيد محسوب تلقائياً بدون نقطة ارتكاز جديدة.</Banner>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
               <Stat label="الملف" value={fileInfo?.fileName ?? ''} small />
               <Stat label="الشيفتات" value={String(analysis.totalBlocks)} />
@@ -244,6 +279,24 @@ export default function ImportExcel() {
         {step === 'report' && report && (
           <Card>
             <div className="text-center mb-4"><div className="text-4xl mb-2">✅</div><h3 className="font-extrabold text-lg">اكتمل الاستيراد</h3></div>
+            {report.openingCheckpoint && (
+              <Banner type={report.openingCheckpoint.mismatch ? 'warning' : 'success'}>
+                💰 تم اعتماد رصيد أول الصندوق ({(report.openingCheckpoint.amountPiastres / 100).toLocaleString('ar-EG')} ج) بتاريخ {report.openingCheckpoint.date} كنقطة ارتكاز جديدة.
+                {report.openingCheckpoint.mismatch && !ackMismatch && (
+                  <div className="mt-2">
+                    <div className="mb-2">⚠️ يختلف عن الرصيد الذي كان سيُحسب تلقائياً ({(report.openingCheckpoint.calculatedPiastres / 100).toLocaleString('ar-EG')} ج). القيمة المُدخلة اعتُمدت بالفعل — راجع الملف إن لم يكن هذا مقصوداً.</div>
+                    <div className="flex gap-2">
+                      <button onClick={() => setAckMismatch(true)} className="px-3 py-1.5 rounded-lg text-xs font-bold" style={{ background: 'rgba(16,185,129,0.15)', color: '#34d399' }}>
+                        ✓ اعتماد القيمة كما هي
+                      </button>
+                      <button onClick={exportErrors} className="px-3 py-1.5 rounded-lg text-xs font-bold" style={{ background: 'rgba(239,68,68,0.15)', color: '#f87171' }}>
+                        مراجعة الملف
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </Banner>
+            )}
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
               <Stat label="استُوردت" value={String(report.imported)} accent="#10b981" />
               <Stat label="شيفتات أُنشئت" value={String(report.shiftsCreated)} />

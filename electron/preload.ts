@@ -80,9 +80,10 @@ const api = {
 
   // استيراد اليومية من Excel
   excel: {
-    analyze:      ()                                  => ipcRenderer.invoke('excel:analyze'),
-    import:       (filePath: string, options: unknown) => ipcRenderer.invoke('excel:import', filePath, options),
-    exportErrors: (errors: unknown[])                 => ipcRenderer.invoke('excel:exportErrors', errors),
+    analyze:          ()                                  => ipcRenderer.invoke('excel:analyze'),
+    import:           (filePath: string, options: unknown) => ipcRenderer.invoke('excel:import', filePath, options),
+    exportErrors:     (errors: unknown[])                 => ipcRenderer.invoke('excel:exportErrors', errors),
+    downloadTemplate: ()                                  => ipcRenderer.invoke('excel:downloadTemplate'),
   },
 
   // موظفون
@@ -136,6 +137,9 @@ const api = {
   treasury: {
     data: (month: string) => ipcRenderer.invoke('treasury:data', month),
     addAdjustment: (data: unknown) => ipcRenderer.invoke('treasury:addAdjustment', data),
+    addCheckpoint: (data: unknown) => ipcRenderer.invoke('treasury:addCheckpoint', data),
+    position: (fromDate: string, toDateExclusive: string) => ipcRenderer.invoke('treasury:position', fromDate, toDateExclusive),
+    shiftPosition: (shiftId: number) => ipcRenderer.invoke('treasury:shiftPosition', shiftId),
   },
 
   // v2.27.0 (14-Jun) — الرواتب والتقفيل الشهري

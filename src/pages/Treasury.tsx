@@ -12,6 +12,7 @@ interface Movement {
 }
 interface TreasuryData {
   opening: number
+  openingDate: string
   incomingAll: number; outgoingAll: number; currentBalance: number
   prevBalance: number; shiftsCount: number; monthIn: number; monthOut: number
   movements: Movement[]
@@ -30,9 +31,10 @@ export default function Treasury() {
   const [data,  setData]    = useState<TreasuryData | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // رصيد أول الصندوق (يدوي)
+  // رصيد أول الصندوق — نقطة ارتكاز جديدة مؤرَّخة (لا تؤثر على الشهور قبل تاريخها)
   const [editingOpen, setEditingOpen] = useState(false)
   const [openInput, setOpenInput] = useState('')
+  const [openDateInput, setOpenDateInput] = useState(() => new Date().toISOString().slice(0, 10))
   const [savingOpen, setSavingOpen] = useState(false)
 
   async function load() {
@@ -46,7 +48,9 @@ export default function Treasury() {
   async function saveOpening() {
     setSavingOpen(true)
     try {
-      await call(api.settings.set('treasury.opening', String(parsePias(openInput || '0'))))
+      await call(api.treasury.addCheckpoint({
+        date: openDateInput, amount: parsePias(openInput || '0'), source: 'manual',
+      }))
       setEditingOpen(false)
       show('تم حفظ رصيد أول الصندوق ✓', 'success')
       await load()
@@ -86,7 +90,7 @@ export default function Treasury() {
           </div>
           <div>
             <h1 style={{ fontSize: 18, fontWeight: 800, color: 'var(--txt-1)', lineHeight: 1.2 }}>
-              حسابات خزينة الإدارة
+              حسابات الصندوق
             </h1>
             <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>
               {data?.shiftsCount ?? 0} شيفت في هذا الشهر
@@ -143,8 +147,11 @@ export default function Treasury() {
           <div className="flex items-start justify-between mb-2">
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt-2)' }}>رصيد أول الصندوق</span>
             {!editingOpen && (
-              <button onClick={() => { setOpenInput(String((data?.opening ?? 0) / 100)); setEditingOpen(true) }}
-                className="p-1.5 rounded-lg" style={{ background: '#06b6d420', color: '#06b6d4' }} title="تعديل">
+              <button onClick={() => {
+                setOpenInput(String((data?.opening ?? 0) / 100))
+                setOpenDateInput(new Date().toISOString().slice(0, 10))
+                setEditingOpen(true)
+              }} className="p-1.5 rounded-lg" style={{ background: '#06b6d420', color: '#06b6d4' }} title="تعديل">
                 <Icons.Settings size={13} />
               </button>
             )}
@@ -153,6 +160,11 @@ export default function Treasury() {
             <div className="flex flex-col gap-1.5">
               <input className="field tabular-nums" type="number" min={0} autoFocus value={openInput}
                 onChange={e => setOpenInput(e.target.value)} placeholder="0" style={{ fontSize: 14, padding: '6px 8px' }} />
+              <input className="field tabular-nums" type="date" value={openDateInput}
+                onChange={e => setOpenDateInput(e.target.value)} style={{ fontSize: 12, padding: '5px 8px' }} />
+              <div style={{ fontSize: 10, color: 'var(--txt-3)' }}>
+                يُعتمد كرصيد بداية من هذا التاريخ فقط — لا يؤثر على شهور سابقة له
+              </div>
               <div className="flex gap-1.5">
                 <button onClick={saveOpening} disabled={savingOpen} className="btn-primary btn-sm flex-1" style={{ fontSize: 11, padding: '4px' }}>
                   {savingOpen ? '...' : 'حفظ'}
@@ -161,9 +173,14 @@ export default function Treasury() {
               </div>
             </div>
           ) : (
-            <div className="tabular-nums" style={{ fontSize: 22, fontWeight: 800, color: '#06b6d4', lineHeight: 1.15 }}>
-              {fmt(data?.opening ?? 0)} <span style={{ fontSize: 11 }}>ج</span>
-            </div>
+            <>
+              <div className="tabular-nums" style={{ fontSize: 22, fontWeight: 800, color: '#06b6d4', lineHeight: 1.15 }}>
+                {fmt(data?.opening ?? 0)} <span style={{ fontSize: 11 }}>ج</span>
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
+                بتاريخ {data?.openingDate && data.openingDate !== '0000-01-01' ? fmtDate(data.openingDate) : '—'}
+              </div>
+            </>
           )}
         </div>
 

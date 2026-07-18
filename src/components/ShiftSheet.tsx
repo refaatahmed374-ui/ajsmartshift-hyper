@@ -3,6 +3,7 @@ import { api, call } from '../lib/api'
 import { fmt, parsePias } from '../lib/format'
 import { useToast } from '../store/toast'
 import { useAuth } from '../store/auth'
+import { useFloatingWindows } from '../store/floatingWindows'
 import { calcFawry, calcCustody, calcFawryWithCommission, calcShiftClosing } from '../../core/engine'
 import type {
   Shift, Journal, Transaction, ShiftFawry, ShiftCustody,
@@ -33,6 +34,7 @@ const rows = (n: number) => Array.from({ length: Math.max(0, n) }, () => ({ ...e
 export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, embedded }: Props) {
   const toast = useToast()
   const { user } = useAuth()
+  const { open: openWindow } = useFloatingWindows()
   const [shift, setShift] = useState<Shift | null>(null)
   const [journal, setJournal] = useState<Journal | null>(null)
   const [txs, setTxs] = useState<Transaction[]>([])
@@ -43,7 +45,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const [editId, setEditId] = useState<number | null>(null)
   const [draft, setDraft] = useState<TxDraft>(emptyDraft)
   const [drafts, setDrafts] = useState<TxDraft[]>([])
-  const [prevFund, setPrevFund] = useState(0) // رصيد سابق لحركة خزينة الإدارة (يدوي، settings لكل شيفت)
+  const [fundPos, setFundPos] = useState<{ before: number; cashIn: number; mgmtOut: number; after: number } | null>(null)
   const [closeDlg, setCloseDlg] = useState(false)
   const draftsInitRef = useRef<number | null>(null) // ADR-012 v2 — يمنع تكرار ملء الصفوف الافتراضية عند كل تحميل
 
@@ -63,11 +65,21 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
       setDrafts(rows(DEFAULT_ROWS - t.length))
       draftsInitRef.current = shiftId
     }
+    // v2.33.0 — موضع الشيفت على خط رصيد الصندوق (نقاط الارتكاز) — للتحقّق، غير قابل للتعديل يدوياً
+    call<typeof fundPos>(api.treasury.shiftPosition(shiftId)).then(setFundPos).catch(() => setFundPos(null))
   }
   useEffect(() => { load().catch(e => toast.show((e as Error).message, 'error')) }, [shiftId])
+
+  // v2.33.0 — تحديث قوائم التصنيفات تلقائياً بعد إضافة/تعديل من نافذة "إدارة التصنيفات" الطافية
   useEffect(() => {
-    call<string | null>(api.settings.get(`fund.prev.${shiftId}`)).then(v => setPrevFund(v ? Number(v) : 0)).catch(() => {})
-  }, [shiftId])
+    const h = () => {
+      Promise.all([call<MainCategory[]>(api.cats.getMain()), call<SubCategory[]>(api.cats.getSub())])
+        .then(([m, s]) => { setMains(m); setSubs(s) })
+        .catch(() => {})
+    }
+    window.addEventListener('categories:changed', h)
+    return () => window.removeEventListener('categories:changed', h)
+  }, [])
 
   const fawryRes = useMemo(() => fawry ? calcFawry(fawry) : null, [fawry])
   const custodyRes = useMemo(() => custody ? calcCustody(custody) : null, [custody])
@@ -102,11 +114,6 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   }
   async function saveMeta(data: { date?: string; type?: 'morning' | 'evening' | 'between'; cashierName?: string }) {
     try { await call(api.shifts.updateMeta(shiftId, data)); await load(); onChanged?.() }
-    catch (e) { toast.show((e as Error).message, 'error') }
-  }
-  async function savePrevFund(egp: string) {
-    const val = parsePias(egp); setPrevFund(val)
-    try { await call(api.settings.set(`fund.prev.${shiftId}`, String(val))) }
     catch (e) { toast.show((e as Error).message, 'error') }
   }
   async function approveShift() {
@@ -204,7 +211,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const dirOf = (mainCatId: number): 'in' | 'out' => (mainCatId === collectMainId ? 'in' : 'out')
   const amt = (t: Transaction) => t.amountIn + t.amountOut
   const mgmtOut = txs.filter(t => t.payMethod === 'management').reduce((s, t) => s + t.amountOut, 0)
-    + dSum(d => d.payMethod === 'management')                                                          // مصروفات خزينة الإدارة
+    + dSum(d => d.payMethod === 'management')                                                          // مصروفات الصندوق
   // مبيعات فيزا/آجل — من التصنيف الفرعي (لا من الدفع)
   const visaSubId = subs.find(s => s.name === 'مبيعات فيزا')?.id ?? -1
   const creditSubId = subs.find(s => s.name === 'مبيعات آجل')?.id ?? -1
@@ -359,14 +366,14 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
             <CCard label="إجمالي المصروفات" value={fmt(totalExpenses)} accent="#f87171" />
             <CCard label="تحصيل" value={fmt(collections)} accent="#34d399" />
             <div className="rounded-xl px-3.5 py-2 flex-shrink-0" style={{ background: 'rgba(251,191,36,0.16)', border: '1px solid rgba(251,191,36,0.3)' }}>
-              <div className="text-xs font-medium mb-1" style={{ color: 'var(--txt-2)' }}>حسابات خزينة الإدارة 🔒</div>
+              <div className="text-xs font-medium mb-1" style={{ color: 'var(--txt-2)' }}>حسابات الصندوق 🔒</div>
               <FundRow label="✎ عهدة نقدية مستلمة" value={custody?.addFromFund ?? 0} onSave={v => saveCustody('addFromFund', v)} editable />
               <FundRow label="مصروفات العهدة" value={mgmtOut} />
               <FundRow label="متبقي من العهدة" value={custodyRes?.remaining ?? 0} accent={G.sum} />
-              <FundRow label="✎ رصيد أول الصندوق" value={prevFund} onSave={savePrevFund} editable />
+              <FundRow label="رصيد أول الصندوق" value={fundPos?.before ?? 0} />
               <FundRow label="مصروفات الصندوق" value={mgmtOut} />
               <FundRow label="وارد إلى الصندوق" value={shift.cashierRemaining} />
-              <FundRow label="رصيد آخر الصندوق" value={prevFund + shift.cashierRemaining - mgmtOut} accent={G.sum} bold />
+              <FundRow label="رصيد آخر الصندوق" value={fundPos ? fundPos.before + shift.cashierRemaining - mgmtOut : 0} accent={G.sum} bold />
             </div>
           </div>
           {/* عدّاد حالة الشيفت — ثابت أسفل العمود، بمحاذاة عدّاد عمولة فوري أسفل العمود المجاور */}
@@ -386,6 +393,9 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
         <TBtn onClick={() => toast.show('من القائمة: استيراد اليومية', 'info')} icon="📥" label="استيراد" />
         <TBtn onClick={() => toast.show('التصدير قريباً', 'info')} icon="📤" label="تصدير" />
         <TBtn onClick={() => window.print()} icon="🖨" label="طباعة" />
+        {user?.role === 'manager' && (
+          <TBtn onClick={() => openWindow('categories', 'إدارة التصنيفات')} icon="🏷" label="إدارة التصنيفات" />
+        )}
         <div className="mr-auto flex items-center gap-1.5">
           {shift.status === 'open' && <TBtn onClick={approveShift} icon="🔒" label="اعتماد الشيفت" success />}
           <TBtn onClick={requestClose} icon="✖" label="إغلاق الصفحة" />

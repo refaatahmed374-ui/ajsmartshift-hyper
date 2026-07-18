@@ -174,19 +174,20 @@ export function getMonthlyFinancials(db: Database.Database, month: string): Empl
     const penaltyByDays   = Math.round(penaltyDays * dailyWage)
     const penaltyByHours  = Math.round(penaltyDays * workHoursPerDay * emp.hourlyRate)
 
-    // دالة لجمع بنود اليومية للموظف حسب التصنيف الرئيسي (السلف فقط)
-    const sumByCategory = (catName: string): number => {
+    // دالة لجمع بنود اليومية للموظف حسب التصنيف الفرعي (السلف فقط)
+    // v2.33.0 — "أجور" دُمجت تصنيفات فرعية جوه "مصروفات"، فبقينا نتحقّق بالتصنيف الفرعي بدل الرئيسي
+    const sumByCategory = (subCatName: string): number => {
       const row = db.prepare(`
         SELECT COALESCE(SUM(t.amount_out), 0) AS total
         FROM transactions t
         JOIN shifts s ON s.id = t.shift_id
-        LEFT JOIN main_categories mc ON mc.id = t.main_category_id
-        WHERE t.employee_id = ? AND mc.name = ? AND s.date LIKE ?
-      `).get(emp.id, catName, `${month}%`) as { total: number }
+        LEFT JOIN sub_categories sc ON sc.id = t.sub_category_id
+        WHERE t.employee_id = ? AND sc.name = ? AND s.date LIKE ?
+      `).get(emp.id, subCatName, `${month}%`) as { total: number }
       return row.total
     }
 
-    const advances = sumByCategory('أجور')     // السلف فقط (الجزاءات صارت من الحضور)
+    const advances = sumByCategory('سلفة موظف')     // السلف فقط (الجزاءات صارت من الحضور)
 
     return {
       employeeId:    emp.id,

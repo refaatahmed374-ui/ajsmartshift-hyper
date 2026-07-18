@@ -50,6 +50,14 @@ jobs:
         run: |
           $v = "${{ steps.ver.outputs.version }}"
           $rel = "release"
+
+          # استخراج قسم هذا الإصدار من CHANGELOG.md ليظهر كرسالة تحديثات فعلية للعملاء
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $pattern = "(?ms)^## v$([regex]::Escape($v)).*?(?=^## v|\z)"
+          $match = [regex]::Match($changelog, $pattern)
+          $notes = if ($match.Success) { $match.Value.Trim() } else { "إصدار v$v" }
+          $notes | Out-File -FilePath release-notes.md -Encoding utf8
+
           gh release create "v$v-hyper" `
             "$rel/AJ-Smart-Shift-Hyper-Setup-v$v.exe" `
             "$rel/AJ-Smart-Shift-Hyper-Setup-v$v.exe.blockmap" `
@@ -57,4 +65,4 @@ jobs:
             -R refaatahmed374-ui/ajsmartshift-releases `
             --title "AJ Smart Shift Hyper v$v" `
             --latest `
-            --notes "إصدار آلي من CI — الوسم v$v."
+            --notes-file release-notes.md
