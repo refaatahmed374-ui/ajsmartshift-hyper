@@ -40,6 +40,7 @@ const NAV: NavItem[] = [
   { id: 'users',         label: 'صلاحيات المستخدمين', icon: <Icons.User       size={17}/>, roles: ['manager'] },
   { id: 'reports',       label: 'التقارير',           icon: <Icons.Reports    size={17}/>, roles: ['manager','supervisor'] },
   { id: 'treasury',      label: 'حسابات الصندوق',     icon: <Icons.Fund       size={17}/>, roles: ['manager','supervisor'] },
+  { id: 'draftAccounts', label: 'مسودة حسابات',       icon: <Icons.Calculator size={17}/>, roles: ['manager','supervisor','cashier'] },
   { id: 'importExcel',   label: 'استيراد اليومية',    icon: <Icons.Download   size={17}/>, roles: ['manager'] },
   { id: 'categories',    label: 'إدارة التصنيفات',    icon: <Icons.Plus       size={17}/>, roles: ['manager'] },
   { id: 'settings',      label: 'إعدادات النظام',     icon: <Icons.Settings   size={17}/>, roles: ['manager'] },

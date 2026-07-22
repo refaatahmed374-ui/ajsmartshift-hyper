@@ -1,6 +1,13 @@
 import type Database from 'better-sqlite3'
 import type { Transaction, SmartLabel, MainCategory, SubCategory } from '../../../core/types'
 import { addLedgerEntry } from './parties'
+import { assertMonthUnlocked } from './treasury'
+
+// يحسم تاريخ الشيفت لقيد ما (عبر shift_id) لأغراض حارس القفل الشهري
+function shiftDateOfTx(db: Database.Database, txId: number): string | undefined {
+  return (db.prepare(`SELECT s.date FROM transactions t JOIN shifts s ON s.id = t.shift_id WHERE t.id = ?`)
+    .get(txId) as { date: string } | undefined)?.date
+}
 
 function row2tx(r: Record<string, unknown>): Transaction {
   return {
@@ -75,6 +82,9 @@ export function addTransaction(
     createdBy: number
   }
 ): Transaction {
+  const shiftRow = db.prepare(`SELECT date FROM shifts WHERE id = ?`).get(data.shiftId) as { date: string } | undefined
+  if (shiftRow) assertMonthUnlocked(db, shiftRow.date)
+
   const res = db.prepare(`
     INSERT INTO transactions
       (shift_id, journal_id, description, main_category_id, sub_category_id,
@@ -171,10 +181,14 @@ export function updateTransaction(
   if (data.customerId     !== undefined) { sets.push('customer_id = ?');      vals.push(data.customerId) }
   if (data.note           !== undefined) { sets.push('note = ?');             vals.push(data.note) }
   if (sets.length === 0) return
+  const shiftDate = shiftDateOfTx(db, id)
+  if (shiftDate) assertMonthUnlocked(db, shiftDate)
   db.prepare(`UPDATE transactions SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id)
 }
 
 export function deleteTransaction(db: Database.Database, id: number): void {
+  const shiftDate = shiftDateOfTx(db, id)
+  if (shiftDate) assertMonthUnlocked(db, shiftDate)
   db.prepare(`DELETE FROM transactions WHERE id = ?`).run(id)
 }
 
@@ -182,10 +196,11 @@ export function deleteTransaction(db: Database.Database, id: number): void {
 // تحويل صفوف قاعدة البيانات (snake_case) إلى camelCase
 function row2main(r: Record<string, unknown>): MainCategory {
   return {
-    id:        r.id as number,
-    name:      r.name as string,
-    color:     r.color as string,
-    sortOrder: (r.sort_order as number) ?? 0,
+    id:             r.id as number,
+    name:           r.name as string,
+    color:          r.color as string,
+    sortOrder:      (r.sort_order as number) ?? 0,
+    accountingType: (r.accounting_type as string | null) ?? null,
   }
 }
 function row2sub(r: Record<string, unknown>): SubCategory {
@@ -194,6 +209,7 @@ function row2sub(r: Record<string, unknown>): SubCategory {
     mainCategoryId: r.main_category_id as number,
     name:           r.name as string,
     sortOrder:      (r.sort_order as number) ?? 0,
+    accountingType: (r.accounting_type as string | null) ?? null,
   }
 }
 

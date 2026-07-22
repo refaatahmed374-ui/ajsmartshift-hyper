@@ -84,6 +84,7 @@ const api = {
     import:           (filePath: string, options: unknown) => ipcRenderer.invoke('excel:import', filePath, options),
     exportErrors:     (errors: unknown[])                 => ipcRenderer.invoke('excel:exportErrors', errors),
     downloadTemplate: ()                                  => ipcRenderer.invoke('excel:downloadTemplate'),
+    exportMonthlyClose: (month: string, rows: [string, string][]) => ipcRenderer.invoke('excel:exportMonthlyClose', month, rows),
   },
 
   // موظفون
@@ -149,9 +150,11 @@ const api = {
     delete: (id: number) => ipcRenderer.invoke('payroll:delete', id),
   },
   monthlyClose: {
-    save: (month: string, dataJson: string) => ipcRenderer.invoke('monthlyClose:save', month, dataJson),
-    list: () => ipcRenderer.invoke('monthlyClose:list'),
-    get:  (month: string) => ipcRenderer.invoke('monthlyClose:get', month),
+    save:      (month: string, dataJson: string) => ipcRenderer.invoke('monthlyClose:save', month, dataJson),
+    list:      () => ipcRenderer.invoke('monthlyClose:list'),
+    get:       (month: string) => ipcRenderer.invoke('monthlyClose:get', month),
+    approve:   (month: string, dataJson: string, userId: number) => ipcRenderer.invoke('monthlyClose:approve', month, dataJson, userId),
+    unapprove: (month: string, userId: number) => ipcRenderer.invoke('monthlyClose:unapprove', month, userId),
   },
 
   // الإحصائيات

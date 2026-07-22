@@ -7,6 +7,7 @@ import { useLang, loginText } from '../store/lang'
 import { api, call } from '../lib/api'
 import Icons from '../components/Icon'
 import type { User } from '../../core/types'
+import { APP_VERSION } from '../version'
 
 const GOLD = '#e3b341'
 const NAVY = '#1e1b4b'
@@ -123,7 +124,7 @@ export default function Login() {
           <div className="rounded-2xl p-4 mb-3" style={{ background: 'rgba(0,0,0,0.25)', border: '1px solid rgba(255,255,255,0.1)' }}>
             <div className="mb-3" style={{ fontSize: '12px', fontWeight: 700, color: '#a5b4fc', letterSpacing: '0.03em' }}>{t.systemInfo}</div>
             {[
-              [t.version,  'v2.26.3',     GOLD],
+              [t.version,  `v${APP_VERSION}`, GOLD],
               [t.database, 'SQLite 3.45', '#7dd3fc'],
               [t.env,      'Electron 29', '#ffffff'],
             ].map(([k, v, c], i) => (

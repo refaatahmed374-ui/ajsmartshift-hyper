@@ -33,6 +33,8 @@ export interface RawClosing {
   posSales?: number          // «إجمالي مبيعات» → مبيعات POS
   cashierRemaining?: number  // «نقدية» → نقدية الكاشير
   cashierExpenses?: number   // «كاشير» → مصروفات الكاشير (للتحقّق مع المحسوبة من البنود)
+  custodyAdd?: number        // «اضافي عهدة» → عهدة مستلمة (addFromFund)
+  custodyManagement?: number // «ادارة» → عهدة منصرفة (managementPaid)
 }
 
 /** كتلة شيفت واحدة = ترويسة + معاملاتها + فوري + تقفيل. */

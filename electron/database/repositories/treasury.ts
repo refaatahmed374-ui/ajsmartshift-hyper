@@ -254,7 +254,11 @@ export function deletePayrollReport(db: Database.Database, id: number): boolean 
 }
 
 // ═══ تقارير التقفيل الشهري ═══
+// v2.34.4 — بعد الاعتماد تتجمّد نتائج الشهر (Snapshot) ولا يمكن الكتابة فوقها إلا بعد فك الاعتماد صراحة
 export function saveMonthlyClose(db: Database.Database, month: string, dataJson: string): number {
+  const existing = db.prepare(`SELECT status FROM monthly_close_reports WHERE month = ?`).get(month) as { status: string } | undefined
+  if (existing?.status === 'approved')
+    throw new Error(`شهر ${month} مُعتمَد بالفعل — يجب فك اعتماد التقفيل الشهري أولاً قبل إعادة الحفظ`)
   const res = db.prepare(`
     INSERT INTO monthly_close_reports (month, data_json) VALUES (?, ?)
     ON CONFLICT(month) DO UPDATE SET data_json=excluded.data_json, created_at=datetime('now')
@@ -268,4 +272,32 @@ export function listMonthlyCloses(db: Database.Database): unknown[] {
 
 export function getMonthlyClose(db: Database.Database, month: string): unknown {
   return db.prepare(`SELECT * FROM monthly_close_reports WHERE month = ?`).get(month) ?? null
+}
+
+// اعتماد التقفيل الشهري — يحفظ اللقطة النهائية (Snapshot) ويجمّدها؛ يُستدعى فقط بعد التأكد من عدم وجود أخطاء مانعة بالواجهة
+export function approveMonthClose(db: Database.Database, month: string, dataJson: string, userId: number): void {
+  db.prepare(`
+    INSERT INTO monthly_close_reports (month, data_json, status, approved_by, approved_at, unapproved_at)
+    VALUES (?, ?, 'approved', ?, datetime('now'), NULL)
+    ON CONFLICT(month) DO UPDATE SET
+      data_json=excluded.data_json, status='approved', approved_by=excluded.approved_by,
+      approved_at=datetime('now'), unapproved_at=NULL, created_at=datetime('now')
+  `).run(month, dataJson, userId)
+}
+
+// فك اعتماد التقفيل الشهري — يُعيد الشهر لوضع "مفتوح" ليسمح بتعديل القيود وإعادة الاحتساب
+export function unapproveMonthClose(db: Database.Database, month: string, _userId: number): void {
+  const res = db.prepare(`
+    UPDATE monthly_close_reports SET status='open', approved_by=NULL, approved_at=NULL, unapproved_at=datetime('now')
+    WHERE month = ? AND status='approved'
+  `).run(month)
+  if (res.changes === 0) throw new Error(`شهر ${month} غير مُعتمَد أصلاً — لا يوجد ما يُفَك اعتماده`)
+}
+
+// حارس القفل الشهري — يُستدعى من كل دوال كتابة القيود/الشيفتات لمنع التعديل في شهر مُعتمَد ومُجمَّد
+export function assertMonthUnlocked(db: Database.Database, date: string): void {
+  const month = date.slice(0, 7)
+  const row = db.prepare(`SELECT status FROM monthly_close_reports WHERE month = ?`).get(month) as { status: string } | undefined
+  if (row?.status === 'approved')
+    throw new Error(`شهر ${month} مُقفَل (تم اعتماد تقفيله) — يجب فك اعتماد التقفيل الشهري من شاشة التقارير أولاً قبل تعديل أي قيد أو شيفت في هذا الشهر`)
 }

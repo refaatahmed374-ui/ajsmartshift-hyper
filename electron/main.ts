@@ -274,6 +274,8 @@ handle('payroll:delete',        (db, id)   => TreasuryRepo.deletePayrollReport(d
 handle('monthlyClose:save',     (db, month, dataJson) => TreasuryRepo.saveMonthlyClose(db, month as string, dataJson as string))
 handle('monthlyClose:list',     (db)       => TreasuryRepo.listMonthlyCloses(db))
 handle('monthlyClose:get',      (db, month) => TreasuryRepo.getMonthlyClose(db, month as string))
+handle('monthlyClose:approve',   (db, month, dataJson, userId) => TreasuryRepo.approveMonthClose(db, month as string, dataJson as string, userId as number))
+handle('monthlyClose:unapprove', (db, month, userId) => TreasuryRepo.unapproveMonthClose(db, month as string, userId as number))
 
 // ===== الإحصائيات (داشبورد + مالية) =====
 handle('stats:overview',   (db, month) => StatsRepo.getOverview(db, month as string))
@@ -370,6 +372,36 @@ ipcMain.handle('excel:exportErrors', async (_e, errors) => {
     const ws = wb.addWorksheet('الأخطاء')
     ws.addRow(['الورقة', 'الصف', 'نوع الخطأ', 'البيانات الأصلية', 'الوصف'])
     for (const er of errors as ImportErrorRecord[]) ws.addRow([er.sheet, er.row, er.type, er.original, er.message])
+    await wb.xlsx.writeFile(res.filePath)
+    return ok({ canceled: false, path: res.filePath })
+  } catch (e) { return err((e as Error).message) }
+})
+
+// تصدير تقرير التقفيل الشهري إلى Excel — rows: [بيان, قيمة][], الصفوف اللي قيمتها '' تُعامَل كعنوان قسم
+ipcMain.handle('excel:exportMonthlyClose', async (_e, month, rows) => {
+  try {
+    const res = await dialog.showSaveDialog(mainWindow!, {
+      title: 'حفظ تقرير التقفيل الشهري', defaultPath: `تقفيل-شهري-${month as string}.xlsx`,
+      filters: [{ name: 'Excel', extensions: ['xlsx'] }],
+    })
+    if (res.canceled || !res.filePath) return ok({ canceled: true })
+    const wb = new ExcelJS.Workbook()
+    const ws = wb.addWorksheet('التقفيل الشهري', { views: [{ rightToLeft: true }] })
+    ws.columns = [{ width: 40 }, { width: 22 }]
+    for (const [label, value] of rows as [string, string][]) {
+      if (value === '') {
+        const row = ws.addRow([label])
+        ws.mergeCells(row.number, 1, row.number, 2)
+        row.getCell(1).alignment = { horizontal: 'center' }
+        row.getCell(1).font = { bold: true, color: { argb: 'FF854D0E' } }
+        row.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF9C3' } }
+      } else {
+        const row = ws.addRow([label, value])
+        row.getCell(1).font = { bold: true }
+        row.getCell(2).font = { bold: true, color: { argb: 'FF1E3A8A' } }
+        row.getCell(2).alignment = { horizontal: 'left' }
+      }
+    }
     await wb.xlsx.writeFile(res.filePath)
     return ok({ canceled: false, path: res.filePath })
   } catch (e) { return err((e as Error).message) }

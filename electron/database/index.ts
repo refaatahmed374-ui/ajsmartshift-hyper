@@ -540,6 +540,94 @@ const MIGRATIONS = [
         WHERE name='حقوق الملكية' AND NOT EXISTS (
           SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
         )`),
+
+  // ═══════════════════════════════════════════════════════════
+  // v2.34.4 — "نوع محاسبي" مستقل عن kind (يقود حسابات قائمة الدخل تلقائيًا بلا معادلات خاصة لكل تقرير)
+  // + تصنيفان رئيسيان جديدان (الاهلاكات/الخسائر) + قفل شهري للتقفيل المعتمد
+  // ═══════════════════════════════════════════════════════════
+  `ALTER TABLE main_categories ADD COLUMN accounting_type TEXT`,
+  `ALTER TABLE sub_categories  ADD COLUMN accounting_type TEXT`,
+
+  // تسمية "الأرباح المحتجزة" → "أرباح مستلمة" (تسمية فقط، بلا تغيير معنى)
+  `UPDATE sub_categories SET name='أرباح مستلمة' WHERE name='الأرباح المحتجزة'`,
+
+  // تصنيفان رئيسيان جديدان بالكامل
+  `INSERT OR IGNORE INTO main_categories (name, color, sort_order, kind, accounting_type) VALUES ('الاهلاكات', '#94a3b8', 11, 'expense', 'مصروف_غير_نقدي')`,
+  `INSERT OR IGNORE INTO main_categories (name, color, sort_order, kind, accounting_type) VALUES ('الخسائر',  '#dc2626', 12, 'expense', 'خسائر')`,
+
+  // نقل "اهلاك أصول" من "مصروفات" إلى "الاهلاكات" الجديد (نقل بلا حذف — نفس نمط دمج أجور/خصومات سابقًا)
+  `UPDATE sub_categories SET main_category_id=(SELECT id FROM main_categories WHERE name='الاهلاكات')
+     WHERE name='اهلاك أصول' AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+  `UPDATE transactions SET main_category_id=(SELECT id FROM main_categories WHERE name='الاهلاكات')
+     WHERE sub_category_id=(SELECT id FROM sub_categories WHERE name='اهلاك أصول')
+       AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+
+  // نقل "ديون معدومة"/"فروق جرد" من "مصروفات" إلى "الخسائر" الجديد + إعادة تسمية "خسائر" العامة إلى "خسائر أخرى" ونقلها (تفاديًا لتكرار الاسم مع التصنيف الرئيسي الجديد)
+  `UPDATE sub_categories SET main_category_id=(SELECT id FROM main_categories WHERE name='الخسائر')
+     WHERE name='ديون معدومة' AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+  `UPDATE transactions SET main_category_id=(SELECT id FROM main_categories WHERE name='الخسائر')
+     WHERE sub_category_id=(SELECT id FROM sub_categories WHERE name='ديون معدومة')
+       AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+  `UPDATE sub_categories SET main_category_id=(SELECT id FROM main_categories WHERE name='الخسائر')
+     WHERE name='فروق جرد' AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+  `UPDATE transactions SET main_category_id=(SELECT id FROM main_categories WHERE name='الخسائر')
+     WHERE sub_category_id=(SELECT id FROM sub_categories WHERE name='فروق جرد')
+       AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+  `UPDATE sub_categories SET name='خسائر أخرى', main_category_id=(SELECT id FROM main_categories WHERE name='الخسائر')
+     WHERE name='خسائر' AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+  `UPDATE transactions SET main_category_id=(SELECT id FROM main_categories WHERE name='الخسائر')
+     WHERE sub_category_id=(SELECT id FROM sub_categories WHERE name='خسائر أخرى')
+       AND main_category_id=(SELECT id FROM main_categories WHERE name='مصروفات')`,
+
+  // بند فرعي جديد جوه "الخسائر"
+  `INSERT INTO sub_categories (main_category_id, name, sort_order)
+     SELECT id, 'بضاعة تالفة', 10 FROM main_categories
+     WHERE name='الخسائر' AND NOT EXISTS (
+       SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='بضاعة تالفة'
+     )`,
+
+  // بنود كوبونات جديدة جوه "استبدالات" (إضافية — بجانب كيمو/اسكويز الموجودين، أسماء مختلفة تمامًا)
+  ...['كوبونات آيس كريم', 'كوبونات عروض', 'كوبونات شركات']
+    .map((name, i) => `
+      INSERT INTO sub_categories (main_category_id, name, sort_order)
+        SELECT id, '${name}', ${10 + i} FROM main_categories
+        WHERE name='استبدالات' AND NOT EXISTS (
+          SELECT 1 FROM sub_categories WHERE main_category_id = main_categories.id AND name='${name}'
+        )`),
+
+  // تعبئة النوع المحاسبي لكل تصنيف رئيسي (مُحروسة بـ accounting_type IS NULL كي لا تدهس أي تعديل يدوي لاحق)
+  `UPDATE main_categories SET accounting_type='إيراد'            WHERE name='مبيعات'         AND accounting_type IS NULL`,
+  `UPDATE main_categories SET accounting_type='تسوية_ذمم'         WHERE name='تحصيل'          AND accounting_type IS NULL`,
+  `UPDATE main_categories SET accounting_type='مخزون'             WHERE name='مشتريات'        AND accounting_type IS NULL`,
+  `UPDATE main_categories SET accounting_type='تكلفة_مبيعات'      WHERE name='التكاليف'       AND accounting_type IS NULL`,
+  `UPDATE main_categories SET accounting_type='مصروف_تشغيلي'      WHERE name='مصروفات'        AND accounting_type IS NULL`,
+  `UPDATE main_categories SET accounting_type='حركة_مخزون_فقط'    WHERE name='استبدالات'      AND accounting_type IS NULL`,
+  `UPDATE main_categories SET accounting_type='حقوق_ملكية'        WHERE name='حقوق الملكية'   AND accounting_type IS NULL`,
+  // "مرتجعات" الرئيسي يبقى بلا نوع محاسبي (NULL) عمدًا — الاتجاه يُحدَّد على مستوى التصنيف الفرعي فقط (تحت مباشرة)
+  `UPDATE sub_categories SET accounting_type='تصحيح_إيراد' WHERE name='مرتجع مبيعات'   AND accounting_type IS NULL`,
+  `UPDATE sub_categories SET accounting_type='تصحيح_مخزون' WHERE name='مرتجع مشتريات'  AND accounting_type IS NULL`,
+
+  // قفل شهري: تجميد نتائج الشهر بعد الاعتماد، لا يُعاد حسابها أو تُعدَّل قيود شهرها إلا بعد فك الاعتماد صراحة
+  `ALTER TABLE monthly_close_reports ADD COLUMN status        TEXT NOT NULL DEFAULT 'open'`,
+  `ALTER TABLE monthly_close_reports ADD COLUMN approved_by   INTEGER REFERENCES users(id)`,
+  `ALTER TABLE monthly_close_reports ADD COLUMN approved_at   TEXT`,
+  `ALTER TABLE monthly_close_reports ADD COLUMN unapproved_at TEXT`,
+
+  // v2.34.9 — في قالب استيراد الإكسيل: لو "الفئة" مكتوبة "مشتريات" فقط (بلا تصنيف فرعي محدَّد)، تُصنَّف تلقائيًا
+  // "مشتريات عامة" بدل ما تبقى بلا تصنيف فرعي (main_category_id بس بلا sub_category_id)
+  `INSERT OR IGNORE INTO import_category_map (excel_value, main_category_id, sub_category_id)
+     SELECT 'مشتريات', mc.id, sc.id
+       FROM main_categories mc JOIN sub_categories sc ON sc.main_category_id = mc.id
+       WHERE mc.name='مشتريات' AND sc.name='مشتريات عامة'`,
+
+  // v2.34.10 — تصحيح رجعي لمرة واحدة: أي بند "مشتريات" مستورَد سابقًا (قبل قاعدة v2.34.9) وتصنيفه الفرعي فاضٍ
+  // يُصنَّف الآن "مشتريات عامة" تلقائيًا، بلا حاجة لإعادة الاستيراد
+  `UPDATE transactions SET sub_category_id = (
+     SELECT sc.id FROM sub_categories sc
+     WHERE sc.main_category_id = transactions.main_category_id AND sc.name = 'مشتريات عامة'
+   )
+   WHERE sub_category_id IS NULL
+     AND main_category_id = (SELECT id FROM main_categories WHERE name = 'مشتريات')`,
 ]
 
 let _db: Database.Database | null = null

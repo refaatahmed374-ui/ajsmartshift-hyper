@@ -1,6 +1,13 @@
 import type Database from 'better-sqlite3'
 import type { Shift, ShiftFawry, ShiftCustody, Journal, Transaction } from '../../../core/types'
 import { detectShiftType, calcMonthlyShiftNum } from '../../../core/engine'
+import { assertMonthUnlocked } from './treasury'
+
+// يحسم تاريخ الشيفت لأغراض حارس القفل الشهري، ويتحقق منه فورًا
+function assertShiftMonthUnlocked(db: Database.Database, shiftId: number): void {
+  const row = db.prepare(`SELECT date FROM shifts WHERE id = ?`).get(shiftId) as { date: string } | undefined
+  if (row) assertMonthUnlocked(db, row.date)
+}
 
 // ===== تحويل الصفوف =====
 function row2shift(r: Record<string, unknown>): Shift {
@@ -125,6 +132,7 @@ export function updateShiftStatus(
   status: Shift['status'],
   userId: number
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   if (status === 'approved') {
     db.prepare(`UPDATE shifts SET status=?, approved_by=?, approved_at=datetime('now') WHERE id=?`)
       .run(status, userId, shiftId)
@@ -143,6 +151,7 @@ export function closeShift(
   posSales: number,
   _cashierRemaining_ignored: number // هذا المعامل لم يعد مستخدماً
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   // حساب التلقائيات من قاعدة البيانات مباشرة
   const collectionsRow = db.prepare(`
     SELECT COALESCE(SUM(amount_in), 0) AS total FROM transactions t JOIN main_categories mc ON t.main_category_id=mc.id WHERE t.shift_id = ? AND mc.name = 'تحصيل'
@@ -176,6 +185,7 @@ export function updateShiftMeta(
   shiftId: number,
   data: { date?: string; type?: 'morning' | 'evening' | 'between'; cashierName?: string }
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   const sets: string[] = []; const vals: (string | number)[] = []
   if (data.date !== undefined) { sets.push('date = ?'); vals.push(data.date) }
   if (data.type !== undefined) { sets.push('type = ?'); vals.push(data.type) }
@@ -191,6 +201,7 @@ export function updateShiftCloseInputs(
   shiftId: number,
   data: { posSales: number; cashierRemaining: number }
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   const collectionsRow = db.prepare(`
     SELECT COALESCE(SUM(amount_in), 0) AS total
     FROM transactions t JOIN main_categories mc ON t.main_category_id=mc.id WHERE t.shift_id = ? AND mc.name = 'تحصيل'
@@ -208,6 +219,7 @@ export function updateShiftCloseInputs(
 // بدل الاشتقاق من (pay_method != 'management') على البنود المستوردة، والذي قد ينتفخ إذا كان
 // عمود «الدفع» فارغاً لبنود مشتريات/مصروفات/أجور جُمعية لا تمثّل صرفاً فعلياً من درج الكاشير.
 export function overrideShiftExpenses(db: Database.Database, shiftId: number, shiftExpensesPias: number): void {
+  assertShiftMonthUnlocked(db, shiftId)
   db.prepare(`UPDATE shifts SET shift_expenses=? WHERE id=?`).run(shiftExpensesPias, shiftId)
 }
 
@@ -238,6 +250,7 @@ export function updateFawry(
   shiftId: number,
   data: Partial<Omit<ShiftFawry, 'id' | 'shiftId'>>
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   const fields = Object.keys(data)
     .map(k => `${k.replace(/([A-Z])/g, '_$1').toLowerCase()} = ?`)
     .join(', ')
@@ -275,6 +288,7 @@ export function updateCustody(
   shiftId: number,
   data: { addFromFund?: number; managementPaid?: number }
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   if (data.addFromFund !== undefined)
     db.prepare(`UPDATE shift_custody SET add_from_fund=? WHERE shift_id=?`).run(data.addFromFund, shiftId)
   if (data.managementPaid !== undefined)
@@ -287,6 +301,7 @@ export function updateShiftNote(
   shiftId: number,
   note: string
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   db.prepare(`UPDATE shifts SET note=? WHERE id=?`).run(note, shiftId)
 }
 
@@ -295,6 +310,7 @@ export function updateShiftOpeningBalance(
   shiftId: number,
   openingBalance: number
 ): void {
+  assertShiftMonthUnlocked(db, shiftId)
   db.prepare(`UPDATE shifts SET opening_balance=? WHERE id=?`).run(openingBalance, shiftId)
 }
 
@@ -302,8 +318,9 @@ export function deleteShift(
   db: Database.Database,
   shiftId: number
 ): { ok: boolean; reason?: string } {
-  const shift = db.prepare(`SELECT status FROM shifts WHERE id=?`).get(shiftId) as { status: string } | undefined
+  const shift = db.prepare(`SELECT status, date FROM shifts WHERE id=?`).get(shiftId) as { status: string; date: string } | undefined
   if (!shift) return { ok: false, reason: 'الشيفت غير موجود' }
+  assertMonthUnlocked(db, shift.date)
 
   // حذف البيانات المرتبطة أولاً
   db.prepare(`DELETE FROM transactions    WHERE shift_id=?`).run(shiftId)

@@ -192,6 +192,7 @@ export interface MainCategory {
   name: string
   color: string
   sortOrder: number
+  accountingType: string | null
 }
 
 export interface SubCategory {
@@ -199,6 +200,7 @@ export interface SubCategory {
   mainCategoryId: number
   name: string
   sortOrder: number
+  accountingType: string | null
 }
 
 // ===== التسميات الذكية =====

@@ -60,6 +60,15 @@ export default function Employees() {
     setSalaryMode(prev => ({ ...prev, [empId]: getSalaryMode(empId) === 'days' ? 'hours' : 'days' }))
   }
 
+  // ===== v2.34.0 — إخفاء/إظهار صف الراتب لكل موظف (سرية بيانات الرواتب) — مخفي افتراضياً =====
+  const [hiddenSalaryRows, setHiddenSalaryRows] = useState<Record<number, boolean>>({})
+  function isSalaryHidden(empId: number): boolean {
+    return hiddenSalaryRows[empId] ?? true
+  }
+  function toggleSalaryHidden(empId: number) {
+    setHiddenSalaryRows(prev => ({ ...prev, [empId]: !isSalaryHidden(empId) }))
+  }
+
   // ═══ v2.27.0 (14-Jun) — نظام تسليم الرواتب ═══
   // الراتب المستحق لكل موظف حسب الوضع المختار
   function dueSalary(f: EmployeeFinancials): number {
@@ -651,41 +660,62 @@ export default function Employees() {
                   const dueByDays  = f.netByDays  - f.penaltyByDays
                   const dueValue   = mode === 'hours' ? dueByHours : dueByDays
                   const modeColor  = mode === 'hours' ? '#3b82f6' : '#10b981'
+                  const hidden = isSalaryHidden(f.employeeId)
                   return (
                     <tr key={f.employeeId} className="tr">
-                      <td className="td font-bold" style={{ color: 'var(--txt-1)' }}>{f.name}</td>
+                      <td className="td font-bold" style={{ color: 'var(--txt-1)' }}>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => toggleSalaryHidden(f.employeeId)}
+                            className="p-1 rounded-md transition-all"
+                            style={{ color: hidden ? 'var(--txt-3)' : '#10b981', background: hidden ? 'var(--inner-bg)' : 'rgba(16,185,129,0.12)' }}
+                            title={hidden ? 'إظهار بيانات الراتب' : 'إخفاء بيانات الراتب'}>
+                            <Icons.Eye size={13} />
+                          </button>
+                          {f.name}
+                        </div>
+                      </td>
                       <td className="td tabular-nums text-success">{f.presentDays}</td>
                       <td className="td tabular-nums text-danger">{f.absentDays}</td>
                       <td className="td tabular-nums">{(f.totalMinutes / 60).toFixed(1)} س</td>
-                      <td className="td tabular-nums text-info">{fmt(f.wageByHours)}</td>
-                      <td className="td tabular-nums">{fmt(f.wageByDays)}</td>
-                      <td className="td tabular-nums text-danger">{fmt(f.advances)}</td>
-                      <td className="td tabular-nums text-danger">
-                        {fmt(penaltyValue)}
-                        <span className="text-2xs block" style={{ color: 'var(--txt-3)' }}>
-                          ({f.penaltyDays} يوم)
-                        </span>
-                      </td>
-                      {/* الراتب المستحق بالساعة (تلقائي) */}
-                      <td className="td tabular-nums font-bold" style={{ color: '#3b82f6' }}>{fmt(dueByHours)} ج</td>
-                      {/* الراتب المستحق باليوم (تلقائي) */}
-                      <td className="td tabular-nums font-bold" style={{ color: '#10b981' }}>{fmt(dueByDays)} ج</td>
-                      {/* الراتب المعتمد (حسب الوضع المختار) + زر التبديل */}
-                      <td className="td">
-                        <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => toggleSalaryMode(f.employeeId)}
-                            className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-bold transition-all"
-                            style={{ background: modeColor + '18', border: `1px solid ${modeColor}55`, color: modeColor, minWidth: 62 }}
-                            title="اضغط لتبديل طريقة الحساب المعتمدة">
-                            <Icons.Refresh size={10} />
-                            {mode === 'hours' ? 'بالساعة' : 'باليوم'}
-                          </button>
-                          <span className="tabular-nums font-bold flex-1" style={{ fontSize: 13, color: modeColor }}>
-                            {fmt(dueValue)} ج
-                          </span>
-                        </div>
-                      </td>
+                      {hidden ? (
+                        <td className="td tabular-nums text-2xs" style={{ color: 'var(--txt-3)' }} colSpan={7}>
+                          🔒 بيانات الراتب مخفية — اضغط على أيقونة العين لإظهارها
+                        </td>
+                      ) : (
+                        <>
+                          {/* أجر بالساعة / أجر باليوم — من شاشة تسجيل الموظف مباشرة (سعر الوحدة، وليس إجمالي الشهر) */}
+                          <td className="td tabular-nums text-info">{fmt(f.hourlyRate)}</td>
+                          <td className="td tabular-nums">{fmt(f.dailyWage)}</td>
+                          <td className="td tabular-nums text-danger">{fmt(f.advances)}</td>
+                          <td className="td tabular-nums text-danger">
+                            {fmt(penaltyValue)}
+                            <span className="text-2xs block" style={{ color: 'var(--txt-3)' }}>
+                              ({f.penaltyDays} يوم)
+                            </span>
+                          </td>
+                          {/* الراتب المستحق بالساعة (تلقائي) */}
+                          <td className="td tabular-nums font-bold" style={{ color: '#3b82f6' }}>{fmt(dueByHours)} ج</td>
+                          {/* الراتب المستحق باليوم (تلقائي) */}
+                          <td className="td tabular-nums font-bold" style={{ color: '#10b981' }}>{fmt(dueByDays)} ج</td>
+                          {/* الراتب المعتمد (حسب الوضع المختار) + زر التبديل */}
+                          <td className="td">
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => toggleSalaryMode(f.employeeId)}
+                                className="flex items-center gap-1 px-2 py-1 rounded-md text-2xs font-bold transition-all"
+                                style={{ background: modeColor + '18', border: `1px solid ${modeColor}55`, color: modeColor, minWidth: 62 }}
+                                title="اضغط لتبديل طريقة الحساب المعتمدة">
+                                <Icons.Refresh size={10} />
+                                {mode === 'hours' ? 'بالساعة' : 'باليوم'}
+                              </button>
+                              <span className="tabular-nums font-bold flex-1" style={{ fontSize: 13, color: modeColor }}>
+                                {fmt(dueValue)} ج
+                              </span>
+                            </div>
+                          </td>
+                        </>
+                      )}
                     </tr>
                   )
                 })}
@@ -719,12 +749,18 @@ export default function Employees() {
             color: 'var(--txt-2)', background: 'var(--inner-bg)', border: '1px solid var(--inner-border)',
           }}>
             <div className="mb-2 font-bold" style={{ color: 'var(--txt-1)' }}>📐 المعادلات:</div>
-            <div>صافي بالساعة = أجر بالساعة − السلف &nbsp;|&nbsp; صافي باليوم = أجر باليوم − السلف</div>
+            <div>أجر بالساعة / أجر باليوم = سعر الوحدة كما هو مسجَّل في شاشة "تسجيل موظف جديد" (ثابت لا يتغيّر بالحضور)</div>
             <div className="mt-1">
-              <span style={{ color: '#10b981', fontWeight: 700 }}>الراتب المستحق (باليوم)</span> = صافي باليوم − (أيام الجزاء × أجر اليوم)
+              <span style={{ color: '#3b82f6', fontWeight: 700 }}>مستحق بالساعة</span> = (ساعات الحضور × أجر بالساعة) − السلف
             </div>
             <div className="mt-1">
-              <span style={{ color: '#3b82f6', fontWeight: 700 }}>الراتب المستحق (بالساعة)</span> = صافي بالساعة − (أيام الجزاء × ساعات اليوم × أجر الساعة)
+              <span style={{ color: '#10b981', fontWeight: 700 }}>مستحق باليوم</span> = (أيام الحضور × أجر باليوم) − السلف
+            </div>
+            <div className="mt-1">
+              <span style={{ color: '#10b981', fontWeight: 700 }}>الراتب المستحق (باليوم)</span> = مستحق باليوم − (أيام الجزاء × أجر اليوم)
+            </div>
+            <div className="mt-1">
+              <span style={{ color: '#3b82f6', fontWeight: 700 }}>الراتب المستحق (بالساعة)</span> = مستحق بالساعة − (أيام الجزاء × ساعات اليوم × أجر الساعة)
             </div>
             <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--inner-border)' }}>
               📍 <b>السلف</b>: من بنود اليومية بتصنيف <b>"مصروفات" ← "سلفة موظف"</b> مع تحديد الموظف

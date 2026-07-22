@@ -26,22 +26,26 @@ export function seedDatabase(db: Database.Database): void {
 
   // ===== التصنيفات الرئيسية =====
   // kind: يحدّد اتجاه المعاملة في استيراد Excel (income/collection=وارد، الباقي=منصرف)
+  // accountingType: النوع المحاسبي (يقود حسابات قائمة الدخل تلقائيًا — انظر MonthlyCloseReport) — null يعني يُحدَّد على مستوى الفرعي
   // المرجع: قالب إكسل «حسابات حورس» (الفئات الفعلية المستخدمة في اليوميات)
   // v2.33.0 — إعادة هيكلة: "أجور"/"خصومات" دُمجا داخل "مصروفات" (تصنيفات فرعية)، وأُضيف "التكاليف"/"حقوق الملكية"
-  const mainCats = [
-    { name: 'مبيعات',           color: '#2ea043', order: 1, kind: 'income'     },
-    { name: 'تحصيل',            color: '#22d3ee', order: 2, kind: 'collection' },
-    { name: 'مرتجعات',          color: '#388bfd', order: 3, kind: 'return'     },
-    { name: 'مشتريات',          color: '#d29922', order: 5, kind: 'purchase'   },
-    { name: 'مصروفات',          color: '#f85149', order: 7, kind: 'expense'    },
-    { name: 'استبدالات',        color: '#f97316', order: 8, kind: 'expense'    },
-    { name: 'التكاليف',         color: '#0ea5e9', order: 9, kind: 'expense'    },
-    { name: 'حقوق الملكية',     color: '#64748b', order: 10, kind: 'misc'     },
+  // v2.34.4 — أُضيف "النوع المحاسبي" + تصنيفان رئيسيان جديدان: "الاهلاكات"/"الخسائر"
+  const mainCats: { name: string; color: string; order: number; kind: string; accountingType: string | null }[] = [
+    { name: 'مبيعات',           color: '#2ea043', order: 1,  kind: 'income',     accountingType: 'إيراد' },
+    { name: 'تحصيل',            color: '#22d3ee', order: 2,  kind: 'collection', accountingType: 'تسوية_ذمم' },
+    { name: 'مرتجعات',          color: '#388bfd', order: 3,  kind: 'return',     accountingType: null }, // يُحدَّد على مستوى الفرعي
+    { name: 'مشتريات',          color: '#d29922', order: 5,  kind: 'purchase',   accountingType: 'مخزون' },
+    { name: 'مصروفات',          color: '#f85149', order: 7,  kind: 'expense',    accountingType: 'مصروف_تشغيلي' },
+    { name: 'استبدالات',        color: '#f97316', order: 8,  kind: 'expense',    accountingType: 'حركة_مخزون_فقط' },
+    { name: 'التكاليف',         color: '#0ea5e9', order: 9,  kind: 'expense',    accountingType: 'تكلفة_مبيعات' },
+    { name: 'حقوق الملكية',     color: '#64748b', order: 10, kind: 'misc',       accountingType: 'حقوق_ملكية' },
+    { name: 'الاهلاكات',        color: '#94a3b8', order: 11, kind: 'expense',    accountingType: 'مصروف_غير_نقدي' },
+    { name: 'الخسائر',          color: '#dc2626', order: 12, kind: 'expense',    accountingType: 'خسائر' },
   ]
   const insertMain = db.prepare(
-    `INSERT INTO main_categories (name, color, sort_order, kind) VALUES (?, ?, ?, ?)`
+    `INSERT INTO main_categories (name, color, sort_order, kind, accounting_type) VALUES (?, ?, ?, ?, ?)`
   )
-  for (const c of mainCats) insertMain.run(c.name, c.color, c.order, c.kind)
+  for (const c of mainCats) insertMain.run(c.name, c.color, c.order, c.kind, c.accountingType)
 
   // ===== التصنيفات الفرعية =====
   const subCats: { main: string; subs: string[] }[] = [
@@ -57,13 +61,15 @@ export function seedDatabase(db: Database.Database): void {
         'بقالة', 'دواجن', 'ألبان', 'سجاير', 'خضار', 'رصيد فوري', 'استبدالات كوبونات',
       ] },
     { main: 'مصروفات',   subs: [
-        'صيانة', 'كهرباء', 'تليفون وإنترنت', 'مصاريف حكومية', 'إيجار', 'اهلاك أصول', 'مياه', 'تأمينات', 'مرافق',
+        'صيانة', 'كهرباء', 'تليفون وإنترنت', 'مصاريف حكومية', 'إيجار', 'مياه', 'تأمينات', 'مرافق',
         'رواتب موظفين', 'سلفة موظف', 'خصومات العملاء', 'أدوات تنظيف', 'أدوات مكتبية',
-        'ضرائب', 'إنترنت', 'صيانة أجهزة', 'أكياس', 'تغليف', 'دعاية', 'تسويق', 'خسائر', 'غرامات', 'فروق جرد', 'ديون معدومة',
+        'ضرائب', 'إنترنت', 'صيانة أجهزة', 'أكياس', 'تغليف', 'دعاية', 'تسويق', 'غرامات',
       ] },
-    { main: 'استبدالات', subs: ['كيمو استبدال', 'اسكويز استبدال'] },
+    { main: 'استبدالات', subs: ['كيمو استبدال', 'اسكويز استبدال', 'كوبونات آيس كريم', 'كوبونات عروض', 'كوبونات شركات'] },
     { main: 'التكاليف',  subs: ['تكلفة البقالة', 'تكلفة الألبان', 'تكلفة اللحوم', 'تكلفة الدواجن', 'تكلفة الخضار'] },
-    { main: 'حقوق الملكية', subs: ['رأس المال', 'المسحوبات الشخصية', 'الأرباح المحتجزة', 'أرباح السنة الحالية'] },
+    { main: 'حقوق الملكية', subs: ['رأس المال', 'المسحوبات الشخصية', 'أرباح مستلمة', 'أرباح السنة الحالية'] },
+    { main: 'الاهلاكات', subs: ['اهلاك أصول'] },
+    { main: 'الخسائر',   subs: ['خسائر أخرى', 'ديون معدومة', 'فروق جرد', 'بضاعة تالفة'] },
   ]
   const getMainId = db.prepare(`SELECT id FROM main_categories WHERE name = ?`)
   const insertSub  = db.prepare(
@@ -73,6 +79,10 @@ export function seedDatabase(db: Database.Database): void {
     const main = getMainId.get(g.main) as { id: number }
     g.subs.forEach((s, i) => insertSub.run(main.id, s, i + 1))
   }
+
+  // النوع المحاسبي على مستوى الفرعي — "مرتجعات" الرئيسي يبقى بلا نوع (يُحدَّد هنا فقط، اتجاهان مختلفان)
+  db.prepare(`UPDATE sub_categories SET accounting_type='تصحيح_إيراد' WHERE name='مرتجع مبيعات'`).run()
+  db.prepare(`UPDATE sub_categories SET accounting_type='تصحيح_مخزون' WHERE name='مرتجع مشتريات'`).run()
 
   // ===== قواعد تعيين استيراد Excel الافتراضية (مفردات قالب حورس ← التصنيفات الجديدة) =====
   // تجعل استيرادات اليومية تُطابَق تلقائياً بلا مراجعة يدوية.
@@ -90,6 +100,8 @@ export function seedDatabase(db: Database.Database): void {
     ['انتاج فراخ', 'إنتاج فراخ'], ['انتاج لحوم', 'إنتاج لحوم'],
     ['مرتجع مشتريات', 'مرتجع مشتريات'],
     ['ايجار', 'إيجار'], ['اهلاك اصول', 'اهلاك أصول'], ['مياه', 'مياه'], ['تامينات', 'تأمينات'], ['مرافق', 'مرافق'],
+    // v2.34.9 — لو الفئة في الإكسيل كتبت "مشتريات" فقط (بلا تصنيف فرعي محدَّد)، تُصنَّف "مشتريات عامة" تلقائيًا بدل ما تبقى بلا تصنيف فرعي
+    ['مشتريات', 'مشتريات عامة'],
   ]
   const getSub = db.prepare(`SELECT id, main_category_id AS mid FROM sub_categories WHERE name = ?`)
   const insertMap = db.prepare(`INSERT OR IGNORE INTO import_category_map (excel_value, main_category_id, sub_category_id) VALUES (?, ?, ?)`)

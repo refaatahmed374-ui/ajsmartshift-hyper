@@ -16,7 +16,7 @@ import {
 } from './valueMapping'
 import { validateTransaction, type MappedTransaction } from './validator'
 import { buildDuplicateIndex, isDuplicate, findPriorImport, type PriorImport } from './duplicateChecker'
-import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses } from '../../database/repositories/shifts'
+import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses, updateCustody } from '../../database/repositories/shifts'
 import { addTransactionsBatch } from '../../database/repositories/transactions'
 import { addTreasuryCheckpoint, getBalanceAsOf } from '../../database/repositories/treasury'
 import type { ShiftType, ShiftFawry } from '../../../core/types'
@@ -271,6 +271,13 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
         updateShiftCloseInputs(db, shift.id, {
           posSales: Math.round((b.closing.posSales ?? 0) * 100),
           cashierRemaining: Math.round((b.closing.cashierRemaining ?? 0) * 100),
+        })
+
+      // 5ب) العهدة (G/H) — «اضافي عهدة» → عهدة مستلمة، «ادارة» → عهدة منصرفة (متبقي العهدة يُحسب تلقائياً في المحرّك، معلوماتي فقط)
+      if (b.closing.custodyAdd !== undefined || b.closing.custodyManagement !== undefined)
+        updateCustody(db, shift.id, {
+          addFromFund: Math.round((b.closing.custodyAdd ?? 0) * 100),
+          managementPaid: Math.round((b.closing.custodyManagement ?? 0) * 100),
         })
 
       // 6) تحقّق (#12): «مبيعات فوري» المقروءة = أساسي + إير تايم المحسوبة

@@ -329,8 +329,8 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* ═══ الصف الأول — 8 بطاقات مصغّرة ═══ */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
+          {/* ═══ 8 بطاقات مصغّرة — صفّان × 4 بطاقات متساوية بعرض الشاشة ═══ */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-stretch">
             <TopAccountCard title="حساب العهدة" icon={<Icons.Fund size={12} />} color="#f59e0b">
               <Stat label="الإضافات" value={`${fmt(M.custodyAdd)} ج`} color="var(--txt-1)" />
               <Stat label="المصروفات" value={`${fmt(M.custodyPaid)} ج`} color="#ef4444" />
@@ -496,9 +496,9 @@ function CardTitle({ icon, title, color = '#3b82f6' }: { icon: React.ReactNode; 
 /** بطاقة حساب مصغّرة للصف الأول — عنوان + شبكة صغيرة من القيم (نفس الارتفاع للأربعة) */
 function TopAccountCard({ title, icon, color, cols = 2, children }: { title: string; icon: React.ReactNode; color: string; cols?: 2 | 3; children: React.ReactNode }) {
   return (
-    <div className="card p-2" style={{ borderTop: `2px solid ${color}` }}>
+    <div className="card p-2 h-full flex flex-col" style={{ borderTop: `2px solid ${color}` }}>
       <CardTitle icon={icon} title={title} color={color} />
-      <div className={cols === 3 ? 'grid grid-cols-3 gap-2' : 'grid grid-cols-2 gap-2'}>{children}</div>
+      <div className={(cols === 3 ? 'grid grid-cols-3 gap-2' : 'grid grid-cols-2 gap-2') + ' flex-1 content-start'}>{children}</div>
     </div>
   )
 }

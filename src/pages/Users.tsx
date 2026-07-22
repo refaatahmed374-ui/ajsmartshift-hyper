@@ -15,6 +15,7 @@ const ALL_PAGES: { id: string; label: string }[] = [
   { id: 'daily',         label: 'اليومية' },
   { id: 'reports',       label: 'التقارير' },
   { id: 'employees',     label: 'الموظفون' },
+  { id: 'draftAccounts', label: 'مسودة حسابات' },
   { id: 'customers',     label: 'العملاء' },
   { id: 'suppliers',     label: 'الموردون' },
   { id: 'users',         label: 'المستخدمون' },

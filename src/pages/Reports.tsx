@@ -1,14 +1,16 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { api, call } from '../lib/api'
 import { useToast } from '../store/toast'
+import { useAuth } from '../store/auth'
 import Icons from '../components/Icon'
 import KPICard from '../components/KPICard'
+import { MiniCombo } from '../components/MiniChart'
 import ShiftSheet from '../components/ShiftSheet'
 import { fmt, fmtDate, shiftTypeLabel, parsePias } from '../lib/format'
 import { generateShiftReportPDF } from '../lib/shiftReport'
 import { calcShiftClosing, calcFawry } from '../../core/engine'
 import { APP_VERSION } from '../version'
-import type { Shift, Transaction, EmployeeFinancials, ShiftFawry } from '../../core/types'
+import type { Shift, Transaction, EmployeeFinancials, ShiftFawry, MainCategory, SubCategory } from '../../core/types'
 
 type Tab = 'journal' | 'monthly_close' | 'annual_close' | 'sales' | 'purchases' | 'expenses' | 'costs' | 'equity' | 'employees' | 'financial'
 
@@ -29,6 +31,16 @@ const TABS: { id: Tab; label: string; icon: React.ReactNode; color: string; matc
 interface FinancialData {
   revenues: number; purchases: number; expenses: number; netProfit: number
   cashIn: number; cashOut: number; receivables: number
+}
+
+// v2.34.0 — تنسيق جدول مكثّف شبيه بشيت الإكسيل (خطوط شبكة على كل خلية + صفوف متناوبة) — لتقريري المبيعات/المشتريات وبقية التبويبات المشتركة
+const xlsTh: React.CSSProperties = { border: '1px solid var(--inner-border)', padding: '5px 10px' }
+const xlsTd: React.CSSProperties = { border: '1px solid var(--inner-border)', padding: '4px 10px' }
+// صف مضغوط (بيان/قيمة) — لجداول صغيرة الحجم مثل "مؤشرات الربحية"
+const compactTd: React.CSSProperties = { padding: '3px 8px', fontSize: 11, border: '1px solid var(--inner-border)' }
+const compactTh: React.CSSProperties = { padding: '4px 8px', fontSize: 10.5, border: '1px solid var(--inner-border)' }
+function xlsRow(i: number): React.CSSProperties {
+  return { background: i % 2 ? 'var(--inner-bg)' : 'transparent' }
 }
 
 // تجميع التقارير الفرعية للقائمة المنسدلة
@@ -279,7 +291,7 @@ export default function Reports() {
         ) : tab === 'journal' ? (
           <JournalReport shifts={shifts} allTxs={allTxs} month={month} bizName={bizName} onReload={load} />
         ) : tab === 'monthly_close' ? (
-          <MonthlyCloseReport month={month} shifts={shifts} allTxs={allTxs} empFin={empFin} finData={finData} />
+          <MonthlyCloseReport month={month} shifts={shifts} allTxs={allTxs} empFin={empFin} finData={finData} onReload={load} />
         ) : tab === 'annual_close' ? (
           <AnnualCloseReport year={month.slice(0, 4)} />
         ) : tab === 'financial' ? (
@@ -433,56 +445,56 @@ export default function Reports() {
               <KPICard label="أعلى عملية" value={fmt(kpis.max) + ' ج'} color="#d29922" icon={<Icons.ArrowRight size={14}/>} />
             </div>
 
-            {/* جدول تجميعي حسب التصنيف الفرعي */}
+            {/* جدول تجميعي حسب التصنيف الفرعي — تنسيق مكثّف شبيه بشيت الإكسيل (خطوط شبكة على كل خلية) */}
             <div className="card p-0 overflow-hidden">
               <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>التوزيع حسب التصنيف الفرعي</div>
               </div>
-              <table className="w-full text-xs">
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
                 <thead><tr>
-                  <th className="th">التصنيف الفرعي</th><th className="th">عدد البنود</th><th className="th">الإجمالي</th>
+                  <th className="th" style={xlsTh}>التصنيف الفرعي</th><th className="th" style={xlsTh}>عدد البنود</th><th className="th" style={xlsTh}>الإجمالي</th>
                 </tr></thead>
                 <tbody>
-                  {grouped.map(g => (
-                    <tr key={g.name} className="tr">
-                      <td className="td font-bold">{g.name}</td>
-                      <td className="td tabular-nums">{g.count}</td>
-                      <td className="td tabular-nums font-bold" style={{ color: cfg.color }}>{fmt(g.total)}</td>
+                  {grouped.map((g, i) => (
+                    <tr key={g.name} style={xlsRow(i)}>
+                      <td className="font-bold" style={xlsTd}>{g.name}</td>
+                      <td className="tabular-nums" style={xlsTd}>{g.count}</td>
+                      <td className="tabular-nums font-bold" style={{ ...xlsTd, color: cfg.color }}>{fmt(g.total)}</td>
                     </tr>
                   ))}
                 </tbody>
-                <tfoot><tr className="border-t-2 border-surface-500">
-                  <td className="td font-bold">الإجمالي</td>
-                  <td className="td tabular-nums font-bold">{kpis.count}</td>
-                  <td className="td tabular-nums font-bold" style={{ color: cfg.color }}>{fmt(kpis.total)}</td>
+                <tfoot><tr style={{ borderTop: '2px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+                  <td className="font-bold" style={xlsTd}>الإجمالي</td>
+                  <td className="tabular-nums font-bold" style={xlsTd}>{kpis.count}</td>
+                  <td className="tabular-nums font-bold" style={{ ...xlsTd, color: cfg.color }}>{fmt(kpis.total)}</td>
                 </tr></tfoot>
               </table>
               {grouped.length === 0 && <div className="text-center py-6" style={{color:'var(--txt-3)'}}>لا توجد بيانات لهذه الفترة</div>}
             </div>
 
-            {/* جدول تفصيلي لكل البنود */}
+            {/* جدول تفصيلي لكل البنود — تنسيق مكثّف شبيه بشيت الإكسيل */}
             <div className="card p-0 overflow-x-auto">
-              <table className="w-full text-xs">
+              <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
                 <thead><tr>
-                  <th className="th">التاريخ</th><th className="th">شيفت</th><th className="th">البيان</th>
-                  <th className="th">التصنيف</th><th className="th">الفرعي</th><th className="th">الدفع</th><th className="th">المبلغ</th>
+                  <th className="th" style={xlsTh}>التاريخ</th><th className="th" style={xlsTh}>شيفت</th><th className="th" style={xlsTh}>البيان</th>
+                  <th className="th" style={xlsTh}>التصنيف</th><th className="th" style={xlsTh}>الفرعي</th><th className="th" style={xlsTh}>الدفع</th><th className="th" style={xlsTh}>المبلغ</th>
                 </tr></thead>
                 <tbody>
-                  {txRows.map(t => (
-                    <tr key={t.id} className="tr">
-                      <td className="td" style={{color:'var(--txt-2)'}}>{t.shift ? fmtDate(t.shift.date) : '—'}</td>
-                      <td className="td text-brand-400">#{t.shift?.monthlyShiftNum ?? '—'}</td>
-                      <td className="td font-medium truncate max-w-[160px]">{t.description}</td>
-                      <td className="td" style={{color:'var(--txt-2)'}}>{t.mainCategoryName}</td>
-                      <td className="td" style={{color:'var(--txt-3)'}}>{t.subCategoryName || '—'}</td>
-                      <td className="td" style={{color:'var(--txt-3)'}}>{payLabel[t.payMethod]}</td>
-                      <td className="td tabular-nums font-bold" style={{color:cfg.color}}>{fmt(t.amountIn + t.amountOut)}</td>
+                  {txRows.map((t, i) => (
+                    <tr key={t.id} style={xlsRow(i)}>
+                      <td style={{...xlsTd,color:'var(--txt-2)'}}>{t.shift ? fmtDate(t.shift.date) : '—'}</td>
+                      <td className="text-brand-400" style={xlsTd}>#{t.shift?.monthlyShiftNum ?? '—'}</td>
+                      <td className="font-medium truncate max-w-[160px]" style={xlsTd}>{t.description}</td>
+                      <td style={{...xlsTd,color:'var(--txt-2)'}}>{t.mainCategoryName}</td>
+                      <td style={{...xlsTd,color:'var(--txt-3)'}}>{t.subCategoryName || '—'}</td>
+                      <td style={{...xlsTd,color:'var(--txt-3)'}}>{payLabel[t.payMethod]}</td>
+                      <td className="tabular-nums font-bold" style={{...xlsTd,color:cfg.color}}>{fmt(t.amountIn + t.amountOut)}</td>
                     </tr>
                   ))}
                 </tbody>
-                <tfoot><tr className="border-t-2 border-surface-500">
-                  <td className="td font-bold" colSpan={6}>الإجمالي ({kpis.count} عملية)</td>
-                  <td className="td tabular-nums font-bold" style={{color:cfg.color}}>{fmt(kpis.total)}</td>
+                <tfoot><tr style={{ borderTop: '2px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+                  <td className="font-bold" colSpan={6} style={xlsTd}>الإجمالي ({kpis.count} عملية)</td>
+                  <td className="tabular-nums font-bold" style={{...xlsTd,color:cfg.color}}>{fmt(kpis.total)}</td>
                 </tr></tfoot>
               </table>
               {txRows.length === 0 && <div className="text-center py-6" style={{color:'var(--txt-3)'}}>لا توجد بيانات لهذا التصنيف</div>}
@@ -1120,6 +1132,28 @@ function AnnualCloseReport({ year }: { year: string }) {
     }
   }, [rows, invStart, invEnd])
 
+  // v2.34.0 — أهم 5 تصنيفات لكل شهر مقفل: المبيعات/المشتريات/المصروفات/صافي الربح/الرصيد الختامي
+  // v2.34.4 — يقرأ الشكل الجديد (totalPurchases/totalExpenses/netProfit قد تكون Metric = رقم أو {missing}) مع توافق خلفي للسجلات القديمة
+  function monthMetrics(d: any) {
+    const num = (v: unknown): number => typeof v === 'number' ? v : 0
+    const totalSales = d.totalSales ?? d.posSales ?? 0
+    const totalPurchases = num(d.totalPurchases) || ((d.purchasesGeneral ?? 0) + (d.shipping ?? 0) + (d.meatPurchases ?? 0) + (d.poultryPurchases ?? 0) + (d.productWaste ?? 0))
+    const totalExpenses = num(d.totalExpenses) || ((d.wages ?? 0) + (d.rent ?? 0) + (d.assetDepreciation ?? 0) + (d.water ?? 0) + (d.electricity ?? 0)
+      + (d.insurance ?? 0) + (d.facilities ?? 0) + (d.govFees ?? 0) + (d.phoneInternet ?? 0) + (d.maintenance ?? 0)
+      + (d.officeSupplies ?? 0) + (d.cleaningExpenses ?? 0) + (d.packagingTools ?? 0))
+    const netProfit = num(d.netProfit)
+    const fundClosing = d.fundClosing ?? d.cashClosing ?? 0
+    return { totalSales, totalPurchases, totalExpenses, netProfit, fundClosing }
+  }
+  const monthRows = useMemo(() => rows.map(r => ({ month: r.month, m: monthMetrics(r.d) })), [rows])
+  const yearTotals = useMemo(() => ({
+    totalSales: monthRows.reduce((s, r) => s + r.m.totalSales, 0),
+    totalPurchases: monthRows.reduce((s, r) => s + r.m.totalPurchases, 0),
+    totalExpenses: monthRows.reduce((s, r) => s + r.m.totalExpenses, 0),
+    netProfit: monthRows.reduce((s, r) => s + r.m.netProfit, 0),
+  }), [monthRows])
+  const trendData = useMemo(() => monthRows.map(r => ({ label: r.month.slice(5), in: r.m.totalSales, out: r.m.totalPurchases + r.m.totalExpenses, net: r.m.netProfit })), [monthRows])
+
   async function exportPDF() {
     try {
       const rowsPdf: [string, string][] = [
@@ -1233,21 +1267,52 @@ function AnnualCloseReport({ year }: { year: string }) {
             </div>
           </div>
 
+          {/* v2.34.0 — رسم بياني اتجاهي: مبيعات/مشتريات+مصروفات/صافي ربح عبر أشهر السنة */}
+          {monthRows.length > 1 && (
+            <div className="card p-3">
+              <div className="text-xs font-bold mb-2" style={{ color: 'var(--txt-1)' }}>📈 اتجاه المبيعات والمصروفات والأرباح عبر الشهور</div>
+              <MiniCombo data={trendData} height={180} formatter={v => fmt(v) + ' ج'} />
+            </div>
+          )}
+
+          {/* v2.34.0 — جدول عمودي: كل شهر مقفل صف مستقل، بأهم 5 تصنيفات كأعمدة */}
           <div className="card p-0 overflow-hidden">
             <div className="px-4 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
               <span style={{ fontSize: 14 }}>🗓️</span>
               <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>الأشهر المُجمّعة ({rows.length})</span>
             </div>
-            <div className="divide-y" style={{ borderColor: 'var(--inner-border)' }}>
-              {rows.map(r => (
-                <div key={r.month} className="flex items-center gap-3 px-4 py-2.5 flex-wrap">
-                  <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: 'rgba(236,72,153,0.15)', color: '#ec4899' }}>{r.month}</span>
-                  <span className="text-xs" style={{ color: 'var(--txt-2)' }}>{r.d.shiftsCount ?? 0} شيفت</span>
-                  <span className="tabular-nums text-xs mr-auto" style={{ color: '#3b82f6' }}>POS {fmt(r.d.posSales ?? 0)}</span>
-                  <span className="tabular-nums text-xs font-bold" style={{ color: '#22c55e' }}>ختامي {fmt(r.d.cashClosing ?? 0)}</span>
-                </div>
-              ))}
-            </div>
+            <table className="w-full text-xs">
+              <thead><tr>
+                <th className="th">الشهر</th>
+                <th className="th" style={{ color: '#3b82f6' }}>إجمالي المبيعات</th>
+                <th className="th" style={{ color: '#d29922' }}>إجمالي المشتريات</th>
+                <th className="th" style={{ color: '#f85149' }}>إجمالي المصروفات</th>
+                <th className="th" style={{ color: '#22c55e' }}>صافي الربح</th>
+                <th className="th" style={{ color: '#8b5cf6' }}>الرصيد الختامي</th>
+              </tr></thead>
+              <tbody>
+                {monthRows.map(r => (
+                  <tr key={r.month} className="tr">
+                    <td className="td font-bold" style={{ color: 'var(--txt-1)' }}>
+                      <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: 'rgba(236,72,153,0.15)', color: '#ec4899' }}>{r.month}</span>
+                    </td>
+                    <td className="td tabular-nums font-bold" style={{ color: '#3b82f6' }}>{fmt(r.m.totalSales)}</td>
+                    <td className="td tabular-nums" style={{ color: '#d29922' }}>{fmt(r.m.totalPurchases)}</td>
+                    <td className="td tabular-nums" style={{ color: '#f85149' }}>{fmt(r.m.totalExpenses)}</td>
+                    <td className="td tabular-nums font-bold" style={{ color: r.m.netProfit >= 0 ? '#22c55e' : '#ef4444' }}>{fmt(r.m.netProfit)}</td>
+                    <td className="td tabular-nums font-bold" style={{ color: '#8b5cf6' }}>{fmt(r.m.fundClosing)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{ borderTop: '2px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+                <td className="td font-bold" style={{ color: 'var(--txt-1)' }}>الإجمالي</td>
+                <td className="td tabular-nums font-bold" style={{ color: '#3b82f6' }}>{fmt(yearTotals.totalSales)}</td>
+                <td className="td tabular-nums font-bold" style={{ color: '#d29922' }}>{fmt(yearTotals.totalPurchases)}</td>
+                <td className="td tabular-nums font-bold" style={{ color: '#f85149' }}>{fmt(yearTotals.totalExpenses)}</td>
+                <td className="td tabular-nums font-bold" style={{ color: yearTotals.netProfit >= 0 ? '#22c55e' : '#ef4444' }}>{fmt(yearTotals.netProfit)}</td>
+                <td className="td tabular-nums font-bold" style={{ color: '#8b5cf6' }}>{fmt(sum.cashClosing)}</td>
+              </tr></tfoot>
+            </table>
           </div>
         </>
       )}
@@ -1260,33 +1325,92 @@ function AnnualCloseReport({ year }: { year: string }) {
 // أقسام: إيرادات، مصاريف مشتريات، مصاريف مبيعات، مصاريف إدارية، ماكينة فوري،
 //        حساب الكاش أوت، الصندوق، المخزون (أرصدة) — نفس ترتيب وتسمية الشيت.
 // ═══════════════════════════════════════════════════════════
-interface MonthCloseRow { id: number; month: string; data_json: string; created_at: string }
-
-// أسماء التصنيفات الفرعية المستثناة من سطر «مشتريات» العام لأنها مُفصَّلة كسطور مستقلة في التقرير
-// v2.33.0 — "أدوات نظافة"/"أدوات مكتبية" انتقلا لـ"مصروفات" (لم يعودا تحت "مشتريات") فأُزيلا من هذه القائمة
-const PURCHASE_BREAKOUT_SUBS = [
-  'مشتريات اللحوم', 'مشتريات فراخ', 'شحن ونقل', 'هوالك منتجات',
-  'إنتاج جبن', 'إنتاج فراخ', 'إنتاج لحوم', 'أدوات تغليف',
-]
+// v2.34.4 — status/approved_by/approved_at/unapproved_at لقفل الشهر بعد الاعتماد
+interface MonthCloseRow { id: number; month: string; data_json: string; created_at: string; status?: string; approved_by?: number | null; approved_at?: string | null; unapproved_at?: string | null }
 
 function prevMonthKeyOf(month: string): string {
   const d = new Date(month + '-01T00:00:00'); d.setMonth(d.getMonth() - 1)
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
 }
 
-function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
+// ═══════════════════════════════════════════════════════════
+// v2.34.4 — تقرير التقفيل الشهري: إعادة بناء محاسبي كامل
+// شيفتات معتمدة فقط + تجميع ديناميكي بالنوع المحاسبي + COGS حقيقي + تشخيص + قفل بعد الاعتماد + مقارنة شهر سابق
+// ═══════════════════════════════════════════════════════════
+type Metric = number | { missing: string }
+function isMissing(m: Metric): m is { missing: string } { return typeof m === 'object' && m !== null }
+function metricNum(m: Metric): number { return typeof m === 'number' ? m : 0 }
+
+// صندوق عرض موحّد لكل قيمة رقمية في التقرير — نفس شكل حقول الإدخال ذات الإطار الأزرق (للقراءة فقط، لكن نفس الشكل البصري)
+// مقاس واحد ثابت للصندوق في كل التقرير (بناءً على أكبر قيمة مكتوبة، مثل "2,737,863.00") — لا فرق بين صندوق وصندوق
+// اللون الداخلي يفضل يحمل معناه المحاسبي (أحمر/أخضر/ذهبي) والصندوق نفسه (حدود/خلفية/راديوس/عرض) موحّد دايمًا
+const VALUE_BOX_W = 108
+// fit=true: يُستخدم فقط في الجداول الضيقة متعددة الأعمدة (زي "الأرصدة (المخزون)") حتى ما يفيضش عرض الكارت — ياخد عرض خليته بالظبط بدل المقاس الموحّد
+function ValueBox({ children, color, fit }: { children: React.ReactNode; color?: string; fit?: boolean }) {
+  return (
+    <span className="tabular-nums font-bold" style={{
+      display: 'inline-block', textAlign: 'right', boxSizing: 'border-box',
+      width: fit ? '100%' : VALUE_BOX_W,
+      background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.35)',
+      borderRadius: 5, padding: fit ? '2px 4px' : '2px 7px', fontSize: 10.5, lineHeight: 1.5,
+      color: color ?? '#3b82f6',
+    }}>{children}</span>
+  )
+}
+
+function MetricText({ m, accent, suffix }: { m: Metric; accent?: string; suffix?: string }) {
+  if (isMissing(m)) return <span className="text-2xs font-bold" style={{ color: '#f59e0b' }}>⚠ {m.missing}</span>
+  return <ValueBox color={accent}>{fmt(m)}{suffix ?? ' ج'}</ValueBox>
+}
+
+// أيقونة إخبارية صغيرة — تعرض شرحًا مطولًا كـ tooltip بدل كتابته في الخلية
+function InfoIcon({ title }: { title: string }) {
+  return (
+    <span title={title} style={{
+      display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 13, height: 13,
+      borderRadius: '50%', background: 'var(--inner-bg)', border: '1px solid var(--inner-border)',
+      fontSize: 9, fontWeight: 700, color: 'var(--txt-3)', cursor: 'help', marginInlineStart: 4, flexShrink: 0,
+    }}>i</span>
+  )
+}
+
+// نسخة مضغوطة من MetricText — عند نقص البيانات تعرض أيقونة تحذير صغيرة بدل النص المطوّل (يظهر كـ tooltip عند المرور)
+function MetricCell({ m, accent, suffix }: { m: Metric; accent?: string; suffix?: string }) {
+  if (isMissing(m)) return <span title={m.missing} style={{ cursor: 'help', color: '#f59e0b', fontWeight: 700 }}>⚠</span>
+  return <ValueBox color={accent}>{fmt(m)}{suffix ?? ' ج'}</ValueBox>
+}
+
+function ChangeBadge({ cur, prev }: { cur: number; prev: number | null | undefined }) {
+  if (prev === null || prev === undefined)
+    return <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>الشهر السابق غير مُقفل</span>
+  const diff = cur - prev
+  const pct = prev !== 0 ? (diff / Math.abs(prev)) * 100 : (cur !== 0 ? 100 : 0)
+  const positive = diff >= 0
+  return (
+    <span className="text-2xs font-bold" style={{ color: positive ? '#22c55e' : '#ef4444' }}>
+      {positive ? '▲' : '▼'} {fmt(Math.abs(diff))} ج ({pct >= 0 ? '+' : ''}{pct.toFixed(1)}%)
+    </span>
+  )
+}
+
+interface DiagnosticItem { text: string; blocking: boolean }
+
+function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
   month: string; shifts: Shift[]; allTxs: Transaction[];
-  empFin: EmployeeFinancials[]; finData: FinancialData | null;
+  empFin: EmployeeFinancials[]; finData: FinancialData | null; onReload: () => Promise<void>;
 }) {
+  const { user } = useAuth()
+  const { show } = useToast()
   const [saved, setSaved] = useState<MonthCloseRow[]>([])
   const [busy,  setBusy]  = useState(false)
   const [fawryMap, setFawryMap] = useState<Record<number, ShiftFawry>>({})
   const [settingsMap, setSettingsMap] = useState<Record<string, string>>({})
-  const [prevNetProfit, setPrevNetProfit] = useState<number | null>(null)
+  const [prevData, setPrevData] = useState<{ totalSales?: number; totalPurchases?: number; totalExpenses?: number; grossProfit?: number; netProfit?: number } | null>(null)
   const [logo, setLogo] = useState(''); const [companyName, setCompanyName] = useState('')
-  const { show } = useToast()
+  const [mains, setMains] = useState<MainCategory[]>([])
+  const [subs, setSubsList] = useState<SubCategory[]>([])
+  const [notes, setNotes] = useState('')
 
-  // v2.33.0 — رصيد الصندوق الحقيقي (نقاط الارتكاز) لنفس الشهر — بديل حساب "fund.prev" القديم المعطَّل
   const [treasury, setTreasury] = useState<{ prevBalance: number; movements: { running: number }[] } | null>(null)
   useEffect(() => {
     call(api.treasury.data(month)).then(setTreasury as (d: unknown) => void).catch(() => setTreasury(null))
@@ -1297,36 +1421,40 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
   }
   useEffect(() => { reload() }, [])
 
+  async function loadAuxData() {
+    try {
+      const records = await Promise.all(shifts.map(sh => call<ShiftFawry | null>(api.fawry.get(sh.id)).catch(() => null)))
+      const fm: Record<number, ShiftFawry> = {}
+      shifts.forEach((sh, i) => { const r = records[i]; if (r) fm[sh.id] = r })
+      setFawryMap(fm)
+    } catch { /* */ }
+    try {
+      const st = await call(api.settings.getAll()) as { key: string; value: string }[]
+      const sm: Record<string, string> = {}
+      for (const row of st) sm[row.key] = row.value
+      setSettingsMap(sm)
+      setLogo(sm['biz.logo'] ?? ''); setCompanyName(sm['biz.name'] ?? '')
+    } catch { /* */ }
+    try {
+      const prev = await call(api.monthlyClose.get(prevMonthKeyOf(month))) as MonthCloseRow | null
+      if (prev) { try { setPrevData(JSON.parse(prev.data_json)) } catch { setPrevData(null) } }
+      else setPrevData(null)
+    } catch { setPrevData(null) }
+    try {
+      const [m, s] = await Promise.all([call<MainCategory[]>(api.cats.getMain()), call<SubCategory[]>(api.cats.getSub())])
+      setMains(m); setSubsList(s)
+    } catch { /* */ }
+  }
   useEffect(() => {
     let alive = true
-    ;(async () => {
-      try {
-        const records = await Promise.all(shifts.map(sh => call<ShiftFawry | null>(api.fawry.get(sh.id)).catch(() => null)))
-        if (!alive) return
-        const fm: Record<number, ShiftFawry> = {}
-        shifts.forEach((sh, i) => { const r = records[i]; if (r) fm[sh.id] = r })
-        setFawryMap(fm)
-      } catch { /* */ }
-      try {
-        const st = await call(api.settings.getAll()) as { key: string; value: string }[]
-        if (!alive) return
-        const sm: Record<string, string> = {}
-        for (const row of st) sm[row.key] = row.value
-        setSettingsMap(sm)
-        setLogo(sm['biz.logo'] ?? ''); setCompanyName(sm['biz.name'] ?? '')
-      } catch { /* */ }
-      try {
-        const prev = await call(api.monthlyClose.get(prevMonthKeyOf(month))) as MonthCloseRow | null
-        if (!alive) return
-        if (prev) { try { setPrevNetProfit(JSON.parse(prev.data_json).netProfit ?? null) } catch { setPrevNetProfit(null) } }
-        else setPrevNetProfit(null)
-      } catch { setPrevNetProfit(null) }
-    })()
+    loadAuxData().catch(() => {})
     return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, shifts])
 
   // قيم يدوية محفوظة لكل شهر عبر settings (مخزون بضاعة/لحوم + أرصدة فوري الافتتاحية)
   function manualPias(key: string): number { return Number(settingsMap[`${key}.${month}`] ?? 0) }
+  function manualEntered(key: string): boolean { return settingsMap[`${key}.${month}`] !== undefined }
   async function saveManual(key: string, egp: string) {
     const val = Math.round((parseFloat(egp) || 0) * 100)
     const fullKey = `${key}.${month}`
@@ -1334,165 +1462,295 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
     catch (e) { show((e as Error).message, 'error') }
   }
 
-  const D = useMemo(() => {
-    const tx = allTxs // مُفلترة أصلاً على الشهر من المكوّن الأب
-    const byMainSub = (main: string, sub: string) => tx.filter(t => t.mainCategoryName === main && t.subCategoryName === sub).reduce((a, t) => a + t.amountOut, 0)
-    const byMainSubIn = (main: string, sub: string) => tx.filter(t => t.mainCategoryName === main && t.subCategoryName === sub).reduce((a, t) => a + t.amountIn + t.amountOut, 0)
-    const byMainNoSub = (main: string, excludeSubs: string[]) => tx.filter(t => t.mainCategoryName === main && !excludeSubs.includes(t.subCategoryName)).reduce((a, t) => a + t.amountOut, 0)
-    const mainTotal = (main: string) => tx.filter(t => t.mainCategoryName === main).reduce((a, t) => a + t.amountOut, 0)
+  useEffect(() => { setNotes(settingsMap[`mc.notes.${month}`] ?? '') }, [settingsMap, month])
+  async function saveNotes(val: string) {
+    setNotes(val)
+    try { await call(api.settings.set(`mc.notes.${month}`, val)); setSettingsMap(sm => ({ ...sm, [`mc.notes.${month}`]: val })) }
+    catch (e) { show((e as Error).message, 'error') }
+  }
 
-    // ═══ إيرادات ═══
-    const posSales = shifts.reduce((a, s) => a + (s.posSales ?? 0), 0)
-    let basicSales = 0, airSales = 0, fawryProfitability = 0, fawryToBasicTotal = 0, fawryToAirTotal = 0
-    let cashoutAddTotal = 0, cashoutDiscountTotal = 0, cashoutToBasicTotal = 0, cashoutToAirTotal = 0, fawryCommission = 0
-    for (const s of shifts) {
+  // أول/آخر يوم في الشهر — عرض الفترة فقط (المصدر الحقيقي: شهر الشيفتات المعتمدة)
+  const periodStart = `${month}-01`
+  const periodEnd = (() => { const d = new Date(`${month}-01T00:00:00`); d.setMonth(d.getMonth() + 1); d.setDate(0); return d.toISOString().slice(0, 10) })()
+  const lastApprovedShiftDate = shifts.filter(s => s.status === 'approved').map(s => s.date).sort().slice(-1)[0]
+
+  // ═══ الشهر مُقفَل (مُعتمَد)؟ ═══
+  const thisMonthRow = saved.find(r => r.month === month) as (MonthCloseRow & { status?: string }) | undefined
+  const isLocked = thisMonthRow?.status === 'approved'
+
+  const D = useMemo(() => {
+    const approvedShifts = shifts.filter(s => s.status === 'approved')
+    const approvedShiftIds = new Set(approvedShifts.map(s => s.id))
+    // قاعدة 1 — الشيفتات المعتمدة فقط تدخل في التجميع
+    const tx = allTxs.filter(t => approvedShiftIds.has(t.shiftId))
+
+    const mainByName = (name: string) => mains.find(m => m.name === name)
+    const mainById = new Map(mains.map(m => [m.id, m]))
+    const subById  = new Map(subs.map(s => [s.id, s]))
+    // النوع المحاسبي لبند: الفرعي يطغى على الرئيسي لو محدَّد (قاعدة 2)
+    function accType(t: Transaction): string | null {
+      if (t.subCategoryId) { const s = subById.get(t.subCategoryId); if (s?.accountingType) return s.accountingType }
+      if (t.mainCategoryId) { const m = mainById.get(t.mainCategoryId); if (m?.accountingType) return m.accountingType }
+      return null
+    }
+    function sumByType(type: string, mode: 'out' | 'inout' = 'out'): number {
+      return tx.filter(t => accType(t) === type).reduce((a, t) => a + (mode === 'inout' ? t.amountIn + t.amountOut : t.amountOut), 0)
+    }
+    // عمود ديناميكي: كل التصنيفات الفرعية تحت رئيسي معيّن، مُستبعَدًا الأصفار (قاعدة 2)
+    function columnRows(mainName: string, mode: 'out' | 'inout' = 'out'): { label: string; value: number }[] {
+      const main = mainByName(mainName)
+      if (!main) return []
+      return subs.filter(s => s.mainCategoryId === main.id)
+        .map(s => ({ label: s.name, value: tx.filter(t => t.subCategoryId === s.id).reduce((a, t) => a + (mode === 'inout' ? t.amountIn + t.amountOut : t.amountOut), 0) }))
+        .filter(r => r.value !== 0)
+    }
+
+    // ═══ المبيعات — "مبيعات منتجات POS" هو إجمالي المبيعات فعليًا (يشمل الفيزا/الآجل/النقدي/فوري/التوصيل/اللحوم
+    // ضمنيًا كما تُقفَل به درج الكاشير) — هذه البنود تُعرض للتفصيل فقط ولا تُضاف فوق POS لتفادي الازدواج.
+    // البنود الإضافية الحقيقية غير الداخلة في POS: تطبيقات التوصيل الخارجية، أرباح بيع أصول، إيرادات متنوعة.
+    const INFO_ONLY_SALES_SUBS = ['مبيعات فيزا', 'مبيعات آجل', 'مبيعات نقدي', 'مبيعات رصيد فوري', 'مبيعات توصيل', 'مبيعات لحوم']
+    const posSales = approvedShifts.reduce((a, s) => a + (s.posSales ?? 0), 0)
+    let basicSales = 0, airSales = 0, cashoutAddTotal = 0, cashoutDiscountTotal = 0, fawryCommission = 0
+    for (const s of approvedShifts) {
       const f = fawryMap[s.id]
       if (!f) continue
       const r = calcFawry(f)
-      basicSales += r.basicSales; airSales += r.airSales; fawryProfitability += r.profitability
-      fawryToBasicTotal += f.fawryToBasic; fawryToAirTotal += f.fawryToAir
-      cashoutToBasicTotal += f.cashoutToBasic; cashoutToAirTotal += f.cashoutToAir
-      const cashoutDiff = r.cashoutSales // تسليم − استلام
+      basicSales += r.basicSales; airSales += r.airSales
+      const cashoutDiff = r.cashoutSales
       if (cashoutDiff > 0) cashoutAddTotal += cashoutDiff; else cashoutDiscountTotal += -cashoutDiff
       const visaThisShift = tx.filter(t => t.shiftId === s.id && t.subCategoryName === 'مبيعات فيزا').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
       fawryCommission += visaThisShift - cashoutDiff
     }
-    const fawrySales = basicSales + airSales
-    const totalSales = posSales + fawrySales
-    const meatSales = byMainSubIn('مبيعات', 'مبيعات لحوم')
-    const deliverySales = byMainSubIn('مبيعات', 'مبيعات توصيل')
-
-    // ═══ مصاريف مشتريات ═══
-    const purchasesGeneral = byMainNoSub('مشتريات', PURCHASE_BREAKOUT_SUBS)
-    const purchaseReturns = byMainSub('مرتجعات', 'مرتجع مشتريات')
-    const shipping = byMainSub('مشتريات', 'شحن ونقل')
-    const meatPurchases = byMainSub('مشتريات', 'مشتريات اللحوم')
-    const poultryPurchases = byMainSub('مشتريات', 'مشتريات فراخ')
-    const productWaste = byMainSub('مشتريات', 'هوالك منتجات')
-
-    // ═══ مصاريف مبيعات ═══
-    // v2.33.0 — "خصومات" دُمجت داخل "مصروفات" (خصومات البيع أُعيدت تسميتها "خصومات العملاء")
-    const salesDiscounts = byMainSub('مصروفات', 'خصومات العملاء')
-    let surplus = 0, deficit = 0
-    // نثق بالحقول المحفوظة على الشيفت نفسه (shift_expenses / cashier_collections) بدل إعادة
-    // اشتقاقها من بنود اليومية — فهذه الحقول تُصالَح مع رقم الشيت المرجعي عند الاستيراد
-    // (انظر overrideShiftExpenses في pipeline.ts)، وتُحدَّث بنفس المنطق عند الإدخال اليدوي.
-    for (const s of shifts) {
-      const { result } = calcShiftClosing({
-        posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0,
-        cashierExpenses: s.shiftExpenses ?? 0, collections: s.cashierCollections ?? 0,
-      })
-      if (result > 0) surplus += result; else if (result < 0) deficit += -result
-    }
-    const meatProduction = byMainSub('مشتريات', 'إنتاج لحوم')
-    const poultryProduction = byMainSub('مشتريات', 'إنتاج فراخ')
-    const cheeseProduction = byMainSub('مشتريات', 'إنتاج جبن')
-    const salesReturns = byMainSub('مرتجعات', 'مرتجع مبيعات')
-
-    // ═══ مصاريف إدارية ═══
-    // v2.33.0 — "أجور" دُمجت داخل "مصروفات" (تصنيفان فرعيان: رواتب موظفين + سلفة موظف) بعد إعادة هيكلة التصنيفات
-    const wages = byMainSub('مصروفات', 'رواتب موظفين') + byMainSub('مصروفات', 'سلفة موظف')
-    const rent = byMainSub('مصروفات', 'إيجار')
-    const assetDepreciation = byMainSub('مصروفات', 'اهلاك أصول')
-    const water = byMainSub('مصروفات', 'مياه') // v2.33.0 — تصحيح إملائي "مياة"→"مياه"
-    const electricity = byMainSub('مصروفات', 'كهرباء')
-    const insurance = byMainSub('مصروفات', 'تأمينات')
-    const facilities = byMainSub('مصروفات', 'مرافق')
-    const govFees = byMainSub('مصروفات', 'مصاريف حكومية')
-    const phoneInternet = byMainSub('مصروفات', 'تليفون وإنترنت')
-    const maintenance = byMainSub('مصروفات', 'صيانة')
-    // v2.33.0 — "أدوات مكتبية"/"أدوات نظافة" انتقلا من "مشتريات" إلى "مصروفات" ("أدوات نظافة" أُعيدت تسميتها "أدوات تنظيف")
-    const officeSupplies = byMainSub('مصروفات', 'أدوات مكتبية')
-    const cleaningExpenses = byMainSub('مصروفات', 'أدوات تنظيف')
-    const packagingTools = byMainSub('مشتريات', 'أدوات تغليف')
-
-    // ═══ حساب الكاش أوت ═══
-    const visaSales = byMainSubIn('مبيعات', 'مبيعات فيزا')
+    const fawrySales = basicSales + airSales // ماكينة فوري — تفصيل ضمن POS، لا تُضاف للإجمالي
+    const journalSales = sumByType('إيراد', 'inout')
+    const infoOnlySalesSum = tx.filter(t => t.subCategoryName && INFO_ONLY_SALES_SUBS.includes(t.subCategoryName))
+      .reduce((a, t) => a + t.amountIn + t.amountOut, 0)
+    const additionalSales = journalSales - infoOnlySalesSum // تطبيقات/أرباح بيع أصول/إيرادات متنوعة فقط
+    const totalSales = posSales + additionalSales
+    const visaSales = tx.filter(t => t.subCategoryName === 'مبيعات فيزا').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
     const commissionRatio = visaSales > 0 ? (fawryCommission / visaSales) * 100 : 0
 
-    // ═══ الصندوق (نفس منطق نقاط الارتكاز في شاشة الصندوق تماماً — انظر treasury.ts) ═══
+    const salesColumnRows = [
+      { label: 'مبيعات منتجات (POS)', value: posSales },
+      { label: 'مبيعات فوري (ماكينة) — ضمن POS', value: fawrySales },
+      ...columnRows('مبيعات', 'inout').map(r => INFO_ONLY_SALES_SUBS.includes(r.label) ? { ...r, label: `${r.label} — ضمن POS` } : r),
+    ].filter(r => r.value !== 0)
+
+    // ═══ المشتريات (مخزون) ═══
+    const totalPurchases = sumByType('مخزون')
+    const purchasesColumnRows = columnRows('مشتريات')
+
+    // ═══ المصروفات (تشغيلي) ═══
+    const totalExpenses = sumByType('مصروف_تشغيلي')
+    const expensesColumnRows = columnRows('مصروفات')
+
+    // ═══ المرتجعات (تصحيح إيراد / تصحيح مخزون — على مستوى الفرعي) ═══
+    const salesReturnsTotal = sumByType('تصحيح_إيراد')
+    const purchaseReturnsTotal = sumByType('تصحيح_مخزون')
+    const returnsColumnRows = [...columnRows('مرتجعات')]
+
+    // ═══ الإهلاكات والخسائر ═══
+    const totalDepreciation = sumByType('مصروف_غير_نقدي')
+    const depreciationRows = columnRows('الاهلاكات')
+    const totalLosses = sumByType('خسائر')
+    const lossesRows = columnRows('الخسائر')
+    const inventoryDiscrepancy = tx.filter(t => t.subCategoryName === 'فروق جرد').reduce((a, t) => a + t.amountOut, 0)
+
+    // ═══ التحصيل — معلوماتي فقط، خارج سلسلة الربح تمامًا (قاعدة 5) ═══
+    const totalCollection = sumByType('تسوية_ذمم', 'inout')
+    const collectionColumnRows = columnRows('تحصيل', 'inout')
+
+    // ═══ الاستبدالات — مراجعة فقط، صفر أثر مالي (قاعدة 4) ═══
+    const exchangesRows = columnRows('استبدالات', 'inout')
+    const exchangesTotal = exchangesRows.reduce((a, r) => a + r.value, 0)
+
+    // ═══ تكلفة البضاعة المباعة = أول المدة (يدوي) + المشتريات (تلقائي) − مرتجع مشتريات − آخر المدة (يدوي) — قاعدة 3 و12 ═══
+    const invStartEntered = manualEntered('mc.inv.start'), invEndEntered = manualEntered('mc.inv.end')
+    const invStart = manualPias('mc.inv.start'), invEnd = manualPias('mc.inv.end')
+    const cogs: Metric = (!invStartEntered || !invEndEntered)
+      ? { missing: 'أدخل رصيد أول وآخر المدة (بند "الأرصدة" أسفل) لحساب تكلفة البضاعة المباعة' }
+      : invStart + totalPurchases - purchaseReturnsTotal - invEnd
+
+    // ═══ مؤشرات الربحية (قاعدة 5) ═══
+    const netSales = totalSales - salesReturnsTotal
+    const grossProfit: Metric = isMissing(cogs) ? cogs : netSales - metricNum(cogs)
+    const grossMarginPct: Metric = isMissing(grossProfit) ? grossProfit : (netSales > 0 ? (metricNum(grossProfit) / netSales) * 100 : 0)
+    const netProfit: Metric = isMissing(grossProfit) ? grossProfit : metricNum(grossProfit) - totalExpenses - totalDepreciation - totalLosses
+    const netMarginPct: Metric = isMissing(netProfit) ? netProfit : (netSales > 0 ? (metricNum(netProfit) / netSales) * 100 : 0)
+
+    // ═══ الصندوق ═══
     const fundOpening = treasury?.prevBalance ?? 0
-    const fundCashIn = shifts.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
+    const fundCashIn = approvedShifts.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
     const fundExpenses = tx.filter(t => t.payMethod === 'management').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
-    // آخر رصيد متراكم في حركات الشهر (يراعي تلقائياً أي نقطة ارتكاز وقعت وسط الشهر) بدل الجمع الخطّي البسيط
     const fundClosing = treasury?.movements.length ? treasury.movements[treasury.movements.length - 1].running : fundOpening
 
-    // صافي الربح — نفس معادلة لوحة المعلومات (إجمالي المبيعات − مشتريات − مصروفات − أجور) للاتساق بين الشاشتين
-    // v2.33.0 — "أجور" (رواتب موظفين/سلفة موظف) بقت تصنيفات فرعية جوه "مصروفات"؛ تُستبعَد هنا من إجمالي
-    // "مصروفات" العام حتى لا تُطرَح مرتين (مرة ضمن مصروفات، ومرة كـ wages منفصلة)
-    const netProfit = totalSales - mainTotal('مشتريات') - byMainNoSub('مصروفات', ['رواتب موظفين', 'سلفة موظف']) - wages
-
-    // ═══ المخزون (أرصدة) — بضاعة عامة يدوية + لحوم يدوية + أرصدة فوري تراكمية (افتتاحي يدوي + ختامي محسوب) ═══
-    const invStart = manualPias('mc.inv.start'), invEnd = manualPias('mc.inv.end')
-    const meatInvStart = manualPias('mc.meatInv.start'), meatInvEnd = manualPias('mc.meatInv.end')
+    // ═══ المخزون (فوري) ═══
     const basicBalOpen = manualPias('mc.fawryBal.basic'), basicBalClose = basicBalOpen + basicSales
     const airBalOpen = manualPias('mc.fawryBal.air'), airBalClose = airBalOpen + airSales
     const cashoutBalOpen = manualPias('mc.fawryBal.cashout'), cashoutBalClose = cashoutBalOpen + (cashoutAddTotal - cashoutDiscountTotal)
+    const meatInvStart = manualPias('mc.meatInv.start'), meatInvEnd = manualPias('mc.meatInv.end')
+    const poultryInvStart = manualPias('mc.poultryInv.start'), poultryInvEnd = manualPias('mc.poultryInv.end')
+    const cigInvStart = manualPias('mc.cigInv.start'), cigInvEnd = manualPias('mc.cigInv.end')
+    const inventoryTable = [
+      { label: 'منتجات', start: invStart, end: invEnd, startKey: 'mc.inv.start', endKey: 'mc.inv.end' },
+      { label: 'لحوم',   start: meatInvStart, end: meatInvEnd, startKey: 'mc.meatInv.start', endKey: 'mc.meatInv.end' },
+      { label: 'دواجن',  start: poultryInvStart, end: poultryInvEnd, startKey: 'mc.poultryInv.start', endKey: 'mc.poultryInv.end' },
+      { label: 'سجاير',  start: cigInvStart, end: cigInvEnd, startKey: 'mc.cigInv.start', endKey: 'mc.cigInv.end' },
+    ]
+
+    // ═══ تشخيص الشهر (قاعدة 7/8) — 6 بنود دائمة الظهور بحالة ✓/⚠/⛔ ═══
+    const uncategorizedCount = tx.filter(t => !t.mainCategoryId).length
+    const unapprovedShiftsCount = shifts.length - approvedShifts.length
+    const negativeAggregates = totalSales < 0 || totalPurchases < 0 || totalExpenses < 0
+    const balancesMissing = !invStartEntered || !invEndEntered
+    const diagnostics: DiagnosticItem[] = []
+    if (unapprovedShiftsCount > 0) diagnostics.push({ text: `يوجد ${unapprovedShiftsCount} شيفت غير معتمد في هذا الشهر — مُستبعَد من كل الأرقام`, blocking: true })
+    if (balancesMissing) diagnostics.push({ text: 'رصيد أول أو آخر المدة غير مُدخَل — لا يمكن حساب تكلفة البضاعة المباعة', blocking: true })
+    if (uncategorizedCount > 0) diagnostics.push({ text: `يوجد ${uncategorizedCount} قيد بدون تصنيف`, blocking: true })
+    if (inventoryDiscrepancy !== 0) diagnostics.push({ text: `يوجد فروق جرد بقيمة ${fmt(inventoryDiscrepancy)} ج — للمراجعة`, blocking: false })
+    if (negativeAggregates) diagnostics.push({ text: 'قيم سالبة غير منطقية في مجاميع أساسية', blocking: false })
+    if (approvedShifts.length === 0) diagnostics.push({ text: 'لا توجد شيفتات معتمدة في هذا الشهر بعد', blocking: true })
+    // بطاقات التشخيص الست الثابتة (تُعرَض دائمًا بحالتها، مانعة أو تنبيه فقط)
+    const diagCards = [
+      { key: 'critical',      label: 'الأخطاء الحرجة',        ok: !diagnostics.some(d => d.blocking), detail: diagnostics.find(d => d.blocking)?.text ?? 'لا يوجد', blocking: true },
+      { key: 'negatives',     label: 'قيم سالبة غير منطقية',  ok: !negativeAggregates, detail: negativeAggregates ? 'يوجد قيم سالبة' : 'لا يوجد', blocking: false },
+      { key: 'inventoryDiff', label: 'فروقات جرد',            ok: inventoryDiscrepancy === 0, detail: inventoryDiscrepancy === 0 ? 'لا يوجد فروق' : `${fmt(inventoryDiscrepancy)} ج`, blocking: false },
+      { key: 'balances',      label: 'رصيد أول / آخر المدة',   ok: !balancesMissing, detail: balancesMissing ? 'غير مكتمل' : 'مكتمل', blocking: true },
+      { key: 'uncategorized', label: 'قيود بدون تصنيف',       ok: uncategorizedCount === 0, detail: uncategorizedCount === 0 ? 'لا يوجد' : `${uncategorizedCount} قيود`, blocking: true },
+      { key: 'unapproved',    label: 'شيفتات غير معتمدة',     ok: unapprovedShiftsCount === 0, detail: unapprovedShiftsCount === 0 ? 'لا يوجد' : `${unapprovedShiftsCount} شيفت`, blocking: true },
+    ]
 
     return {
-      // توافق خلفي مع تقرير التقفيل السنوي (نفس أسماء الحقول القديمة)
-      shiftsCount: shifts.length, itemsCount: tx.length,
-      totalIn: tx.reduce((a, t) => a + t.amountIn, 0), totalOut: tx.reduce((a, t) => a + t.amountOut, 0),
-      posSales, fawrySales, visaSales, cashierAdded: fundCashIn, mgmtSpent: fundExpenses,
-      cashOpening: fundOpening, cashClosing: fundClosing,
-      invStart, invEnd, invDiff: invEnd - invStart,
+      shiftsCount: approvedShifts.length, itemsCount: tx.length,
+      posSales, fawrySales, journalSales, totalSales, visaSales, commissionRatio,
+      salesColumnRows, purchasesColumnRows, expensesColumnRows, returnsColumnRows, collectionColumnRows,
+      totalPurchases, totalExpenses, salesReturnsTotal, purchaseReturnsTotal,
+      totalDepreciation, depreciationRows, totalLosses, lossesRows, inventoryDiscrepancy,
+      totalCollection, exchangesRows, exchangesTotal,
+      invStart, invEnd, invStartEntered, invEndEntered, cogs, inventoryTable,
+      netSales, grossProfit, grossMarginPct, netProfit, netMarginPct,
+      fundOpening, fundExpenses, fundClosing, fundCashIn,
+      basicBalOpen, basicBalClose, airBalOpen, airBalClose, cashoutBalOpen, cashoutBalClose,
+      meatInvStart, meatInvEnd, cashoutAddTotal, cashoutDiscountTotal, fawryCommission,
       employees: empFin.length, dueSalaries: empFin.reduce((a, f) => a + (f.dueSalary ?? 0), 0),
-      // الأقسام التفصيلية الجديدة (شيت حورس)
-      totalSales, meatSales, deliverySales,
-      purchasesGeneral, purchaseReturns, shipping, meatPurchases, poultryPurchases, productWaste,
-      salesDiscounts, surplus, deficit, meatProduction, poultryProduction, cheeseProduction, salesReturns,
-      wages, rent, assetDepreciation, water, electricity, insurance, facilities, govFees, phoneInternet, maintenance, officeSupplies, cleaningExpenses, packagingTools,
-      basicSales, airSales, fawryProfitability, fawryToBasicTotal, fawryToAirTotal,
-      fawryCommission, cashoutAddTotal, cashoutDiscountTotal, commissionRatio, cashoutToBasicTotal, cashoutToAirTotal,
-      fundOpening, fundExpenses, fundClosing, fundCashIn, netProfit,
-      meatInvStart, meatInvEnd, basicBalOpen, basicBalClose, airBalOpen, airBalClose, cashoutBalOpen, cashoutBalClose,
+      diagnostics, diagCards, uncategorizedCount, unapprovedShiftsCount,
+      // توافق خلفي بسيط للتقرير السنوي (يقرأ posSales/cashClosing/netProfit)
+      cashOpening: fundOpening, cashClosing: fundClosing,
     }
-  }, [shifts, allTxs, empFin, fawryMap, settingsMap, month, treasury])
+  }, [shifts, allTxs, empFin, fawryMap, settingsMap, month, treasury, mains, subs])
 
-  async function closeMonth() {
+  const canApprove = !D.diagnostics.some(d => d.blocking)
+  // عرض الأرقام المجمَّدة (Snapshot) لو الشهر مُعتمَد، وإلا الحساب الحيّ
+  const view: typeof D = isLocked && thisMonthRow ? (() => { try { return JSON.parse(thisMonthRow.data_json) } catch { return D } })() : D
+
+  async function approveMonth() {
+    if (!user) return
+    if (!canApprove) { show('لا يمكن اعتماد الشهر — يوجد أخطاء مانعة في لوحة التشخيص', 'error'); return }
     setBusy(true)
     try {
-      await call(api.monthlyClose.save(month, JSON.stringify(D)))
-      show('تم تقفيل شهر ' + month + ' وحفظه', 'success')
+      await call(api.monthlyClose.approve(month, JSON.stringify(D), user.id))
+      show('تم اعتماد تقفيل شهر ' + month + ' — الأرقام مُجمَّدة الآن', 'success')
       await reload()
     } catch (e) { show((e as Error).message, 'error') }
     finally { setBusy(false) }
+  }
+  async function unapproveMonth() {
+    if (!user) return
+    setBusy(true)
+    try {
+      await call(api.monthlyClose.unapprove(month, user.id))
+      show('تم فك اعتماد الشهر — يمكن الآن تعديل القيود وإعادة الاحتساب', 'success')
+      await reload()
+    } catch (e) { show((e as Error).message, 'error') }
+    finally { setBusy(false) }
+  }
+  async function recalculate() {
+    await loadAuxData()
+    show('تم إعادة الاحتساب', 'success')
+  }
+
+  // اعتماد جماعي لكل الشيفتات غير المعتمدة بالشهر (مثلاً بعد استيراد إكسل) — تدخل الشيفتات المستوردة بحالة "مراجعة"
+  // ولا تظهر في أرقام التقرير إلا بعد الاعتماد (قاعدة 1)، فبدل اعتماد كل شيفت يدويًا نوفّر زرًا جماعيًا هنا
+  async function approvePendingShifts() {
+    if (!user) return
+    const pending = shifts.filter(s => s.status !== 'approved')
+    if (!pending.length) return
+    if (!confirm(`اعتماد ${pending.length} شيفت غير معتمد في هذا الشهر؟`)) return
+    setBusy(true)
+    try {
+      for (const s of pending) await call(api.shifts.updateStatus(s.id, 'approved', user.id))
+      show(`تم اعتماد ${pending.length} شيفت`, 'success')
+      await onReload()
+    } catch (e) { show((e as Error).message, 'error') }
+    finally { setBusy(false) }
+  }
+
+  async function exportExcel() {
+    try {
+      const rows: [string, string][] = [
+        ['— المبيعات —', ''],
+        ...view.salesColumnRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي المبيعات', fmt(view.totalSales) + ' ج'],
+        ['— المشتريات —', ''],
+        ...view.purchasesColumnRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي المشتريات', fmt(view.totalPurchases) + ' ج'],
+        ['— المصروفات —', ''],
+        ...view.expensesColumnRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي المصروفات', fmt(view.totalExpenses) + ' ج'],
+        ['— المرتجعات —', ''],
+        ...view.returnsColumnRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي المرتجعات', fmt(view.salesReturnsTotal + view.purchaseReturnsTotal) + ' ج'],
+        ['— التحصيل (معلوماتي) —', ''],
+        ...view.collectionColumnRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي التحصيل', fmt(view.totalCollection) + ' ج'],
+        ['— تكلفة البضاعة المباعة —', ''],
+        ['رصيد أول المدة', view.invStartEntered ? fmt(view.invStart) + ' ج' : 'غير مُدخَل'],
+        ['+ إجمالي المشتريات', fmt(view.totalPurchases) + ' ج'],
+        ['− مرتجع مشتريات', fmt(view.purchaseReturnsTotal) + ' ج'],
+        ['− رصيد آخر المدة', view.invEndEntered ? fmt(view.invEnd) + ' ج' : 'غير مُدخَل'],
+        ['= تكلفة البضاعة المباعة', isMissing(view.cogs) ? 'بيانات ناقصة' : fmt(metricNum(view.cogs)) + ' ج'],
+        ['— مؤشرات الربحية —', ''],
+        ['صافي المبيعات', fmt(view.netSales) + ' ج'],
+        ['مجمل الربح', isMissing(view.grossProfit) ? 'بيانات ناقصة' : fmt(metricNum(view.grossProfit)) + ' ج'],
+        ['هامش الربح الإجمالي', isMissing(view.grossMarginPct) ? '—' : metricNum(view.grossMarginPct).toFixed(2) + '%'],
+        ['صافي الربح', isMissing(view.netProfit) ? 'بيانات ناقصة' : fmt(metricNum(view.netProfit)) + ' ج'],
+        ['صافي هامش الربح', isMissing(view.netMarginPct) ? '—' : metricNum(view.netMarginPct).toFixed(2) + '%'],
+        ['— الإهلاكات —', ''],
+        ...view.depreciationRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي الإهلاكات', fmt(view.totalDepreciation) + ' ج'],
+        ['— الخسائر —', ''],
+        ...view.lossesRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي الخسائر', fmt(view.totalLosses) + ' ج'],
+        ['— الاستبدالات (للمراجعة فقط) —', ''],
+        ...view.exchangesRows.map((r: { label: string; value: number }): [string, string] => [r.label, fmt(r.value) + ' ج']),
+        ['إجمالي الاستبدالات', fmt(view.exchangesTotal) + ' ج'],
+        ['— الصندوق —', ''],
+        ['رصيد أول الفترة', fmt(view.fundOpening) + ' ج'], ['إجمالي الوارد', fmt(view.fundCashIn) + ' ج'],
+        ['إجمالي المنصرف', fmt(view.fundExpenses) + ' ج'], ['رصيد آخر الفترة', fmt(view.fundClosing) + ' ج'],
+        ['— الأرصدة (المخزون) —', ''],
+        ...view.inventoryTable.flatMap((r: { label: string; start: number; end: number }): [string, string][] => [
+          [`${r.label} — أول المدة`, fmt(r.start) + ' ج'], [`${r.label} — آخر المدة`, fmt(r.end) + ' ج'], [`${r.label} — الفرق`, fmt(r.end - r.start) + ' ج'],
+        ]),
+      ]
+      const r = await call<{ canceled: boolean; path?: string }>(api.excel.exportMonthlyClose(month, rows))
+      if (!r.canceled) show('تم تصدير التقرير إلى Excel', 'success')
+    } catch (e) { show((e as Error).message, 'error') }
   }
 
   async function exportClosePDF(monthStr: string, data: typeof D) {
     try {
       const rows: [string, string][] = [
-        ['— إيرادات —', ''],
-        ['اجمالي مبيعات', fmt(data.totalSales) + ' ج'], ['مبيعات منتجات', fmt(data.posSales) + ' ج'],
-        ['مبيعات فوري', fmt(data.fawrySales) + ' ج'], ['مبيعات لحوم', fmt(data.meatSales) + ' ج'], ['مبيعات دليفري', fmt(data.deliverySales) + ' ج'],
-        ['— مصاريف مشتريات —', ''],
-        ['مشتريات', fmt(data.purchasesGeneral) + ' ج'], ['مرتجع مشتريات', fmt(data.purchaseReturns) + ' ج'],
-        ['شحن ونقل', fmt(data.shipping) + ' ج'], ['مشتريات لحوم', fmt(data.meatPurchases) + ' ج'],
-        ['مشتريات فراخ', fmt(data.poultryPurchases) + ' ج'], ['هوالك منتجات', fmt(data.productWaste) + ' ج'],
-        ['— مصاريف مبيعات —', ''],
-        ['خصومات العملاء', fmt(data.salesDiscounts) + ' ج'], ['اوفر', fmt(data.surplus) + ' ج'], ['عجز', fmt(data.deficit) + ' ج'],
-        ['انتاج لحوم', fmt(data.meatProduction) + ' ج'], ['انتاج فراخ', fmt(data.poultryProduction) + ' ج'],
-        ['انتاج جبن', fmt(data.cheeseProduction) + ' ج'], ['مرتجع مبيعات', fmt(data.salesReturns) + ' ج'],
-        ['— مصاريف إدارية —', ''],
-        ['أجور', fmt(data.wages) + ' ج'], ['ايجار', fmt(data.rent) + ' ج'], ['اهلاك أصول', fmt(data.assetDepreciation) + ' ج'],
-        ['مياه', fmt(data.water) + ' ج'], ['كهرباء', fmt(data.electricity) + ' ج'], ['تأمينات', fmt(data.insurance) + ' ج'],
-        ['مرافق', fmt(data.facilities) + ' ج'], ['مصاريف حكومية', fmt(data.govFees) + ' ج'], ['تليفون وانترنت', fmt(data.phoneInternet) + ' ج'],
-        ['صيانة', fmt(data.maintenance) + ' ج'], ['أدوات مكتبية', fmt(data.officeSupplies) + ' ج'],
-        ['مصاريف نظافة', fmt(data.cleaningExpenses) + ' ج'], ['أدوات تغليف', fmt(data.packagingTools) + ' ج'],
-        ['— ماكينة فوري —', ''],
-        ['مبيعات اساسي', fmt(data.basicSales) + ' ج'], ['مبيعات اير تايم', fmt(data.airSales) + ' ج'], ['ربحية فوري', fmt(data.fawryProfitability) + ' ج'],
-        ['من فوري للاساسي', fmt(data.fawryToBasicTotal) + ' ج'], ['من فوري للايرتايم', fmt(data.fawryToAirTotal) + ' ج'],
-        ['— حساب الكاش اوت —', ''],
-        ['مبيعات فيزا', fmt(data.visaSales) + ' ج'], ['عمولة فوري', fmt(data.fawryCommission) + ' ج'],
-        ['اضافة كاش اوت', fmt(data.cashoutAddTotal) + ' ج'], ['خصم كاش اوت', fmt(data.cashoutDiscountTotal) + ' ج'],
-        ['ميزان النسبة', data.commissionRatio.toFixed(2) + '%'],
-        ['من كاش للرئيسي', fmt(data.cashoutToBasicTotal) + ' ج'], ['من كاش للايرتايم', fmt(data.cashoutToAirTotal) + ' ج'],
+        ['— الإجماليات —', ''],
+        ['إجمالي المبيعات', fmt(data.totalSales) + ' ج'], ['إجمالي المشتريات', fmt(data.totalPurchases) + ' ج'],
+        ['تكلفة البضاعة المباعة', isMissing(data.cogs) ? 'بيانات ناقصة' : fmt(metricNum(data.cogs)) + ' ج'],
+        ['مجمل الربح', isMissing(data.grossProfit) ? 'بيانات ناقصة' : fmt(metricNum(data.grossProfit)) + ' ج'],
+        ['إجمالي المصروفات', fmt(data.totalExpenses) + ' ج'],
+        ['صافي الربح', isMissing(data.netProfit) ? 'بيانات ناقصة' : fmt(metricNum(data.netProfit)) + ' ج'],
+        ['إجمالي التحصيل', fmt(data.totalCollection) + ' ج'], ['إجمالي المرتجعات', fmt(data.salesReturnsTotal + data.purchaseReturnsTotal) + ' ج'],
+        ['إجمالي الإهلاكات', fmt(data.totalDepreciation) + ' ج'], ['إجمالي الخسائر', fmt(data.totalLosses) + ' ج'],
         ['— الصندوق —', ''],
-        ['رصيد سابق', fmt(data.fundOpening) + ' ج'], ['مصروفات', fmt(data.fundExpenses) + ' ج'],
-        ['رصيد اخر', fmt(data.fundClosing) + ' ج'], ['نقدية', fmt(data.fundCashIn) + ' ج'],
-        ['ارباح مرحلة', prevNetProfit !== null ? fmt(prevNetProfit) + ' ج' : '—'],
+        ['رصيد سابق', fmt(data.fundOpening) + ' ج'], ['مصروفات', fmt(data.fundExpenses) + ' ج'], ['رصيد اخر', fmt(data.fundClosing) + ' ج'],
       ]
-      const JPEG_Q = 0.85
       const logoHtml = logo
         ? '<div style="width:48px;height:48px;background:#fff;border-radius:10px;display:flex;align-items:center;justify-content:center;overflow:hidden;"><img src="' + logo + '" style="max-width:100%;max-height:100%;object-fit:contain;"/></div>'
         : ''
@@ -1517,21 +1775,21 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
       const canvas = await html2canvas(container.querySelector('#mc-pdf') as HTMLElement, { scale: 1.5, backgroundColor: '#fff' })
       const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
       const imgW = 194, imgH = (canvas.height * imgW) / canvas.width
-      pdf.addImage(canvas.toDataURL('image/jpeg', JPEG_Q), 'JPEG', 8, 8, imgW, imgH)
+      pdf.addImage(canvas.toDataURL('image/jpeg', 0.85), 'JPEG', 8, 8, imgW, imgH)
       pdf.save('تقفيل-شهري-' + monthStr + '.pdf')
       document.body.removeChild(container)
     } catch (e) { console.error(e) }
   }
 
-  // صف عادي (البيان يمين، القيمة يسار — تناسق مع اتجاه RTL)
-  function Line({ label, value, accent }: { label: string; value: number; accent?: string }) {
+  function InvCell({ settingKey, value, disabled, onSave }: { settingKey: string; value: number; disabled?: boolean; onSave: (key: string, egp: string) => void }) {
+    const [v, setV] = useState(String(value / 100))
+    useEffect(() => { setV(String(value / 100)) }, [value])
     return (
-      <tr className="tr">
-        <td className="td" style={{ color: 'var(--txt-2)' }}>{label}</td>
-        <td className="td text-left tabular-nums font-bold" style={{ color: accent ?? 'var(--txt-1)' }}>
-          {value === 0 ? <span style={{ color: 'var(--txt-3)' }}>—</span> : `${fmt(value)} ج`}
-        </td>
-      </tr>
+      <input value={v} onChange={e => setV(e.target.value)} onBlur={() => onSave(settingKey, v)} disabled={disabled}
+        className="tabular-nums font-bold text-left w-full" style={{
+          background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.35)', minWidth: 0, boxSizing: 'border-box',
+          borderRadius: 5, padding: '2px 4px', color: '#3b82f6', fontSize: 10.5, outline: 'none', opacity: disabled ? 0.5 : 1,
+        }} />
     )
   }
   function EditableLine({ label, settingKey }: { label: string; settingKey: string }) {
@@ -1540,145 +1798,379 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
     useEffect(() => { setV(String(val / 100)) }, [val])
     return (
       <tr className="tr">
-        <td className="td" style={{ color: '#4ade80' }}>✎ {label}</td>
-        <td className="td text-left">
-          <input value={v} onChange={e => setV(e.target.value)} onBlur={() => saveManual(settingKey, v)}
-            className="tabular-nums font-bold text-left w-28" style={{
-              background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.35)',
-              borderRadius: 6, padding: '3px 8px', color: '#4ade80', fontSize: 13, outline: 'none',
+        <td className="td" style={{ ...compactTd, color: '#3b82f6' }}>✎ {label}</td>
+        <td className="td text-left" style={compactTd}>
+          <input value={v} onChange={e => setV(e.target.value)} onBlur={() => saveManual(settingKey, v)} disabled={isLocked}
+            className="tabular-nums font-bold text-left w-24" style={{
+              background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.35)',
+              borderRadius: 6, padding: '2px 6px', color: '#3b82f6', fontSize: 11, outline: 'none', opacity: isLocked ? 0.5 : 1,
             }} />
         </td>
       </tr>
     )
   }
-  function SectionHeader({ label, color, bg }: { label: string; color: string; bg: string }) {
-    return <tr><td colSpan={2} className="text-center font-extrabold" style={{ padding: '7px 12px', background: bg, color, fontSize: 12.5 }}>{label}</td></tr>
-  }
 
+  // توحيد ألوان التقفيل الشهري: أزرق أساسي (#3b82f6) لكل العناوين/الحدود/الخلفيات، وذهبي (#d4a017) لتمييز الأرقام/الإجماليات المهمة
+  // — باستثناء الأخضر/الأحمر المحاسبي القياسي (موجب/سالب، زيادة/نقصان، حالات التشخيص) اللي يفضل كما هو
+  const PRIMARY = '#3b82f6'
+  const ACCENT = '#d4a017'
+  const CARD_ROW_H = 96 // ارتفاع موحّد لصفّي بطاقات التشخيص ومؤشرات KPI
+  const CARD5_H = 399 // ارتفاع موحّد (300 الأساسي + 3 زيادات 10%) — كل الأقسام أسفل بطاقات KPI تاخذ نفس القيمة بالحرف
+  // رأس قسم موحّد لكل بطاقات/أعمدة التقرير — نفس الخلفية والحدود والأيقونة المنفصلة في كل مكان
+  function SectionHeader({ icon, title }: { icon: string; title: string }) {
+    return (
+      <div className="px-3 py-2 flex items-center gap-1.5" style={{ background: PRIMARY + '12', borderBottom: '1px solid var(--inner-border)' }}>
+        <span>{icon}</span><span className="font-bold text-xs" style={{ color: PRIMARY }}>{title}</span>
+      </div>
+    )
+  }
+  const TOOLBAR_BTN: React.CSSProperties = {
+    fontSize: 12, padding: '8px 14px',
+    background: 'linear-gradient(135deg, #14b8a6 0%, #0d9488 100%)',
+    boxShadow: '0 2px 10px rgba(20,184,166,0.28)',
+  }
   const cards = [
-    { label: 'اجمالي مبيعات', value: fmt(D.totalSales) + ' ج', color: '#3b82f6' },
-    { label: 'مبيعات فوري', value: fmt(D.fawrySales) + ' ج', color: '#8b5cf6' },
-    { label: 'مبيعات فيزا', value: fmt(D.visaSales) + ' ج', color: '#06b6d4' },
-    { label: 'ميزان النسبة (عمولة فوري)', value: D.commissionRatio.toFixed(2) + '%', color: '#f59e0b' },
-    { label: 'رصيد اخر الصندوق', value: fmt(D.fundClosing) + ' ج', color: '#22c55e' },
-    { label: 'صافي الربح', value: fmt(D.netProfit) + ' ج', color: D.netProfit >= 0 ? '#22c55e' : '#ef4444' },
+    { label: 'إجمالي المبيعات', value: fmt(view.totalSales) + ' ج', color: PRIMARY, valueColor: ACCENT, cmp: <ChangeBadge cur={view.totalSales} prev={prevData?.totalSales} /> },
+    { label: 'إجمالي المشتريات', value: fmt(view.totalPurchases) + ' ج', color: PRIMARY, valueColor: ACCENT, cmp: <ChangeBadge cur={view.totalPurchases} prev={prevData?.totalPurchases} /> },
+    { label: 'إجمالي المصروفات', value: fmt(view.totalExpenses) + ' ج', color: PRIMARY, valueColor: ACCENT, cmp: <ChangeBadge cur={view.totalExpenses} prev={prevData?.totalExpenses} /> },
+    { label: 'مجمل الربح', value: isMissing(view.grossProfit) ? '—' : fmt(metricNum(view.grossProfit)) + ' ج', color: PRIMARY, valueColor: ACCENT, cmp: isMissing(view.grossProfit) ? undefined : <ChangeBadge cur={metricNum(view.grossProfit)} prev={prevData?.grossProfit} /> },
+    { label: 'صافي الربح', value: isMissing(view.netProfit) ? '—' : fmt(metricNum(view.netProfit)) + ' ج', color: PRIMARY, valueColor: metricNum(isMissing(view.netProfit) ? 0 : view.netProfit) >= 0 ? '#22c55e' : '#ef4444', cmp: isMissing(view.netProfit) ? undefined : <ChangeBadge cur={metricNum(view.netProfit)} prev={prevData?.netProfit} /> },
+    { label: 'هامش الربح', value: isMissing(view.netMarginPct) ? '—' : metricNum(view.netMarginPct).toFixed(2) + '%', color: PRIMARY, valueColor: ACCENT, sub: 'من صافي المبيعات' },
   ]
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="w-9 h-9 rounded-xl flex items-center justify-center" style={{ background: 'rgba(139,92,246,0.18)', color: '#8b5cf6' }}>
-          <Icons.Lock size={18} />
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
+          <button onClick={() => exportClosePDF(month, view)} className="btn-next" style={TOOLBAR_BTN}>
+            <Icons.Download size={13} /> تصدير PDF
+          </button>
+          <button onClick={exportExcel} className="btn-next" style={TOOLBAR_BTN}>
+            <Icons.Download size={13} /> تصدير Excel
+          </button>
+          <button onClick={() => window.print()} className="btn-next" style={TOOLBAR_BTN}>
+            <Icons.Records size={13} /> طباعة
+          </button>
+          {!isLocked && (
+            <button onClick={recalculate} className="btn-next" style={TOOLBAR_BTN}>
+              <Icons.Refresh size={13} /> إعادة احتساب
+            </button>
+          )}
         </div>
-        <div>
-          <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--txt-1)' }}>تقارير التقفيل الشهري</div>
-          <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>بنفس تنسيق وحسابات شيت التقفيل المرجعي — يُحفظ للرجوع إليه</div>
+        <div className="text-left">
+          <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--txt-1)' }}>تقرير التقفيل الشهري {month.split('-')[1]}-{month.split('-')[0]}</div>
+          <div style={{ fontSize: 11, color: 'var(--txt-3)' }}>تقارير شهرية • البيانات من الشيفتات المعتمدة فقط</div>
         </div>
-        <button onClick={closeMonth} disabled={busy} className="btn-primary mr-auto" style={{ fontSize: 12, padding: '8px 18px' }}>
-          {busy ? <><Icons.Refresh size={13} className="animate-spin" /> جاري...</> : <><Icons.Lock size={13} /> تقفيل شهر {month}</>}
-        </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-        {cards.map(c => (
-          <div key={c.label} className="rounded-2xl p-4" style={{ background: c.color + '12', border: '1px solid ' + c.color + '40' }}>
-            <div className="text-2xs mb-1 font-bold" style={{ color: c.color }}>{c.label}</div>
-            <div className="tabular-nums font-bold" style={{ fontSize: 17, color: c.color }}>{c.value}</div>
+      <div className="flex items-center gap-4 flex-wrap text-xs" style={{ color: 'var(--txt-2)' }}>
+        <div>
+          <div style={{ color: 'var(--txt-3)', fontSize: 10.5 }}>آخر شيفت معتمد</div>
+          <div className="font-bold" style={{ color: 'var(--txt-1)' }}>{lastApprovedShiftDate ? fmtDate(lastApprovedShiftDate) : '—'}</div>
+        </div>
+        <div>
+          <div style={{ color: 'var(--txt-3)', fontSize: 10.5 }}>حالة التقفيل</div>
+          <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: isLocked ? 'rgba(34,197,94,0.15)' : canApprove ? 'rgba(34,197,94,0.15)' : 'rgba(239,68,68,0.15)', color: isLocked ? '#22c55e' : canApprove ? '#22c55e' : '#ef4444' }}>
+            {isLocked ? '🔒 معتمد' : canApprove ? '✓ جاهز للاعتماد' : '✕ يوجد أخطاء مانعة'}
+          </span>
+        </div>
+        <div>
+          <div style={{ color: 'var(--txt-3)', fontSize: 10.5 }}>الفترة</div>
+          <div className="font-bold tabular-nums" style={{ color: 'var(--txt-1)' }}>{fmtDate(periodStart)} إلى {fmtDate(periodEnd)}</div>
+        </div>
+      </div>
+
+      {/* لوحة تشخيص الشهر — 6 بطاقات ثابتة الظهور (قاعدة 7/8) */}
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+        {D.diagCards.map(c => (
+          <div key={c.key} className="rounded-xl p-2.5" style={{ background: c.ok ? 'rgba(34,197,94,0.08)' : c.blocking ? 'rgba(239,68,68,0.08)' : 'rgba(245,158,11,0.08)', border: `1px solid ${c.ok ? 'rgba(34,197,94,0.3)' : c.blocking ? 'rgba(239,68,68,0.3)' : 'rgba(245,158,11,0.3)'}`, minHeight: CARD_ROW_H, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+            <div className="text-2xs font-bold mb-1" style={{ color: 'var(--txt-2)' }}>{c.label}</div>
+            <div className="flex items-center gap-1 text-xs font-bold" style={{ color: c.ok ? '#22c55e' : c.blocking ? '#ef4444' : '#f59e0b' }}>
+              <span>{c.ok ? '✓' : c.blocking ? '⛔' : '⚠'}</span><span>{c.detail}</span>
+            </div>
           </div>
         ))}
       </div>
 
-      {/* الجدول الرئيسي — نفس بنية شيت حورس بالكامل: البيان | القيمة */}
-      <div className="card p-0 overflow-hidden">
-        <table className="w-full text-xs">
-          <thead className="sticky top-0 z-10"><tr>
-            <th className="th">البيان</th>
-            <th className="th text-left">القيمة</th>
-          </tr></thead>
-          <tbody>
-            <SectionHeader label="إيرادات" color="#854d0e" bg="rgba(234,179,8,0.22)" />
-            <Line label="اجمالي مبيعات" value={D.totalSales} accent="#3b82f6" />
-            <Line label="مبيعات منتجات" value={D.posSales} />
-            <Line label="مبيعات فوري" value={D.fawrySales} />
-            <Line label="مبيعات لحوم" value={D.meatSales} />
-            <Line label="مبيعات دليفري" value={D.deliverySales} />
+      {!isLocked && D.unapprovedShiftsCount > 0 && (
+        <div className="rounded-xl p-3 flex items-center justify-between gap-3" style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.25)' }}>
+          <div className="text-xs" style={{ color: 'var(--txt-2)' }}>
+            يوجد <b>{D.unapprovedShiftsCount}</b> شيفت غير معتمد في هذا الشهر (غالبًا مستورَد من إكسل بحالة "مراجعة") — لن يدخل في أي رقم بالتقرير حتى يُعتمَد.
+          </div>
+          <button onClick={approvePendingShifts} disabled={busy} className="btn-danger-pro" style={{ fontSize: 12, padding: '8px 16px', whiteSpace: 'nowrap' }}>
+            {busy ? 'جارٍ الاعتماد...' : `🔒 اعتماد كل الشيفتات المعلّقة (${D.unapprovedShiftsCount})`}
+          </button>
+        </div>
+      )}
 
-            <SectionHeader label="مصاريف مشتريات" color="#854d0e" bg="rgba(234,179,8,0.22)" />
-            <Line label="مشتريات" value={D.purchasesGeneral} />
-            <Line label="مرتجع مشتريات" value={D.purchaseReturns} />
-            <Line label="شحن ونقل" value={D.shipping} />
-            <Line label="مشتريات لحوم" value={D.meatPurchases} />
-            <Line label="مشتريات فراخ" value={D.poultryPurchases} />
-            <Line label="هوالك منتجات" value={D.productWaste} />
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+        {cards.map(c => (
+          <div key={c.label} className="rounded-2xl p-4" style={{ background: c.color + '12', border: '1px solid ' + c.color + '40', minHeight: CARD_ROW_H, display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+            <div className="text-2xs mb-1 font-bold" style={{ color: c.color }}>{c.label}</div>
+            <div className="tabular-nums font-bold" style={{ fontSize: 17, color: c.valueColor }}>{c.value}</div>
+            {c.sub && <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>{c.sub}</div>}
+            {c.cmp && <div className="mt-1">{c.cmp}</div>}
+          </div>
+        ))}
+      </div>
 
-            <SectionHeader label="مصاريف مبيعات" color="#334155" bg="rgba(148,163,184,0.25)" />
-            <Line label="خصومات العملاء" value={D.salesDiscounts} />
-            <Line label="اوفر" value={D.surplus} accent="#22c55e" />
-            <Line label="عجز" value={D.deficit} accent="#ef4444" />
-            <Line label="انتاج لحوم" value={D.meatProduction} />
-            <Line label="انتاج فراخ" value={D.poultryProduction} />
-            <Line label="انتاج جبن" value={D.cheeseProduction} />
-            <Line label="مرتجع مبيعات" value={D.salesReturns} />
+      {/* أعمدة المبيعات/المشتريات/المصروفات/مؤشرات الربحية/التحصيل — تجميع ديناميكي حسب التصنيفات (قاعدة 2)
+          مؤشرات الربحية اتنقلت هنا مكان المرتجعات (بناءً على طلب تبديل الأماكن) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+        {[
+          { title: 'المبيعات', icon: '🛒', rows: view.salesColumnRows, total: view.totalSales },
+          { title: 'المشتريات', icon: '📦', rows: view.purchasesColumnRows, total: view.totalPurchases },
+          { title: 'المصروفات', icon: '📄', rows: view.expensesColumnRows, total: view.totalExpenses },
+        ].map(col => (
+          <div key={col.title} className="card p-0 overflow-hidden">
+            <SectionHeader icon={col.icon} title={col.title} />
+            <table className="w-full text-2xs">
+              <tbody>
+                {col.rows.length === 0 && <tr><td className="td text-center" style={{ color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }} colSpan={2}>لا توجد بنود</td></tr>}
+                {col.rows.map(r => (
+                  <tr key={r.label} className="tr">
+                    <td className="td" style={compactTd}>{r.label}</td>
+                    <td className="td text-left" style={compactTd}><ValueBox>{fmt(r.value)}</ValueBox></td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{ borderTop: `2px solid ${ACCENT}40`, background: ACCENT + '0d' }}>
+                <td className="td font-bold" style={{ ...compactTd, color: ACCENT }}>الإجمالي</td>
+                <td className="td text-left" style={compactTd}><ValueBox color={ACCENT}>{fmt(col.total)}</ValueBox></td>
+              </tr></tfoot>
+            </table>
+          </div>
+        ))}
 
-            <SectionHeader label="مصاريف إدارية" color="#854d0e" bg="rgba(234,179,8,0.22)" />
-            <Line label="أجور" value={D.wages} />
-            <Line label="ايجار" value={D.rent} />
-            <Line label="اهلاك أصول" value={D.assetDepreciation} />
-            <Line label="مياه" value={D.water} />
-            <Line label="كهرباء" value={D.electricity} />
-            <Line label="تأمينات" value={D.insurance} />
-            <Line label="مرافق" value={D.facilities} />
-            <Line label="مصاريف حكومية" value={D.govFees} />
-            <Line label="تليفون وانترنت" value={D.phoneInternet} />
-            <Line label="صيانة" value={D.maintenance} />
-            <Line label="أدوات مكتبية" value={D.officeSupplies} />
-            <Line label="مصاريف نظافة" value={D.cleaningExpenses} />
-            <Line label="أدوات تغليف" value={D.packagingTools} />
+        {/* التحصيل — انتقل هنا مكان مؤشرات الربحية */}
+        {(() => { const col = { title: 'التحصيل', icon: '💳', rows: view.collectionColumnRows, total: view.totalCollection }; return (
+          <div key={col.title} className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+            <SectionHeader icon={col.icon} title={col.title} />
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <table className="w-full text-2xs">
+              <tbody>
+                {col.rows.length === 0 && <tr><td className="td text-center" style={{ color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }} colSpan={2}>لا توجد بنود</td></tr>}
+                {col.rows.map(r => (
+                  <tr key={r.label} className="tr">
+                    <td className="td" style={compactTd}>{r.label}</td>
+                    <td className="td text-left" style={compactTd}><ValueBox>{fmt(r.value)}</ValueBox></td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{ borderTop: `2px solid ${ACCENT}40`, background: ACCENT + '0d' }}>
+                <td className="td font-bold" style={{ ...compactTd, color: ACCENT }}>الإجمالي</td>
+                <td className="td text-left" style={compactTd}><ValueBox color={ACCENT}>{fmt(col.total)}</ValueBox></td>
+              </tr></tfoot>
+            </table>
+            </div>
+          </div>
+        ) })()}
 
-            <SectionHeader label="ماكينة فوري" color="#854d0e" bg="rgba(234,179,8,0.22)" />
-            <Line label="مبيعات اساسي" value={D.basicSales} />
-            <Line label="مبيعات اير تايم" value={D.airSales} />
-            <Line label="ربحية فوري" value={D.fawryProfitability} />
-            <Line label="من فوري للاساسي" value={D.fawryToBasicTotal} />
-            <Line label="من فوري للايرتايم" value={D.fawryToAirTotal} />
+        {/* المرتجعات — انتقلت هنا يسار التحصيل */}
+        {(() => { const col = { title: 'المرتجعات', icon: '↩️', rows: view.returnsColumnRows, total: view.salesReturnsTotal + view.purchaseReturnsTotal }; return (
+          <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+            <SectionHeader icon={col.icon} title={col.title} />
+            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <table className="w-full text-2xs">
+              <tbody>
+                {col.rows.length === 0 && <tr><td className="td text-center" style={{ color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }} colSpan={2}>لا توجد بنود</td></tr>}
+                {col.rows.map(r => (
+                  <tr key={r.label} className="tr">
+                    <td className="td" style={compactTd}>{r.label}</td>
+                    <td className="td text-left" style={compactTd}><ValueBox>{fmt(r.value)}</ValueBox></td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{ borderTop: `2px solid ${ACCENT}40`, background: ACCENT + '0d' }}>
+                <td className="td font-bold" style={{ ...compactTd, color: ACCENT }}>الإجمالي</td>
+                <td className="td text-left" style={compactTd}><ValueBox color={ACCENT}>{fmt(col.total)}</ValueBox></td>
+              </tr></tfoot>
+            </table>
+            </div>
+          </div>
+        ) })()}
+      </div>
 
-            <SectionHeader label="حساب الكاش اوت" color="#854d0e" bg="rgba(234,179,8,0.22)" />
-            <Line label="مبيعات فيزا" value={D.visaSales} />
-            <Line label="عمولة فوري" value={D.fawryCommission} />
-            <Line label="اضافة كاش اوت" value={D.cashoutAddTotal} accent="#22c55e" />
-            <Line label="خصم كاش اوت" value={D.cashoutDiscountTotal} accent="#ef4444" />
-            <tr className="tr">
-              <td className="td" style={{ color: 'var(--txt-2)' }}>ميزان النسبة</td>
-              <td className="td text-left tabular-nums font-bold" style={{ color: '#f59e0b' }}>{D.commissionRatio.toFixed(2)}%</td>
-            </tr>
-            <Line label="من كاش للرئيسي" value={D.cashoutToBasicTotal} />
-            <Line label="من كاش للايرتايم" value={D.cashoutToAirTotal} />
+      {/* الإهلاكات، ثم الصندوق — المرتجعات اتنقلت لصف المبيعات فوق، فمكانها هنا فاضي */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="📉" title="الإهلاكات" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <table className="w-full"><tbody>
+            {view.depreciationRows.length === 0 && <tr><td className="td text-center" style={{ color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }} colSpan={2}>لا توجد بنود</td></tr>}
+            {view.depreciationRows.map((r: { label: string; value: number }) => (
+              <tr key={r.label} className="tr"><td className="td" style={compactTd}>{r.label}</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(r.value)}</ValueBox></td></tr>
+            ))}
+          </tbody><tfoot><tr style={{ borderTop: `2px solid ${ACCENT}40`, background: ACCENT + '0d' }}><td className="td font-bold" style={{ ...compactTd, color: ACCENT }}>الإجمالي</td><td className="td text-left" style={compactTd}><ValueBox color={ACCENT}>{fmt(view.totalDepreciation)}</ValueBox></td></tr></tfoot></table>
+          </div>
+        </div>
 
-            <SectionHeader label="الصندوق" color="#7c2d12" bg="rgba(249,115,22,0.22)" />
-            <Line label="رصيد سابق" value={D.fundOpening} />
-            <Line label="مصروفات" value={D.fundExpenses} accent="#ef4444" />
-            <Line label="رصيد اخر" value={D.fundClosing} accent="#22c55e" />
-            <Line label="نقدية" value={D.fundCashIn} />
-            <tr className="tr">
-              <td className="td" style={{ color: 'var(--txt-2)' }}>ارباح مرحلة <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>(صافي ربح الشهر السابق)</span></td>
-              <td className="td text-left tabular-nums font-bold" style={{ color: 'var(--txt-1)' }}>
-                {prevNetProfit !== null ? `${fmt(prevNetProfit)} ج` : <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>الشهر السابق غير مُقفل</span>}
-              </td>
-            </tr>
+        {/* الصندوق */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="💰" title="الصندوق" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <table className="w-full"><tbody>
+            <tr className="tr"><td className="td" style={compactTd}>رصيد أول الفترة</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.fundOpening)} ج</ValueBox></td></tr>
+            <tr className="tr"><td className="td" style={compactTd}>إجمالي الوارد</td><td className="td text-left" style={compactTd}><ValueBox color="#22c55e">{fmt(view.fundCashIn)} ج</ValueBox></td></tr>
+            <tr className="tr"><td className="td" style={compactTd}>إجمالي المنصرف</td><td className="td text-left" style={compactTd}><ValueBox color="#ef4444">{fmt(view.fundExpenses)} ج</ValueBox></td></tr>
+            <tr className="tr" style={{ borderTop: '1px solid var(--inner-border)' }}><td className="td font-bold" style={compactTd}>رصيد آخر الفترة</td><td className="td text-left" style={compactTd}><ValueBox color="#22c55e">{fmt(view.fundClosing)} ج</ValueBox></td></tr>
+          </tbody></table>
+          </div>
+        </div>
 
-            <SectionHeader label="المخزون (أرصدة)" color="#854d0e" bg="rgba(234,179,8,0.22)" />
-            <EditableLine label="رصيد اول منتجات" settingKey="mc.inv.start" />
-            <EditableLine label="رصيد اخر منتجات" settingKey="mc.inv.end" />
-            <EditableLine label="رصيد اول لحوم" settingKey="mc.meatInv.start" />
-            <EditableLine label="رصيد اخر لحوم" settingKey="mc.meatInv.end" />
+        {/* أرصدة فوري — انتقلت هنا لتملأ الفراغ في نفس الصف، وتاخد تلقائيًا نفس ارتفاع الصندوق (grid stretch) */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="📱" title="أرصدة فوري" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <table className="w-full"><tbody>
             <EditableLine label="رصيد اول اساسي" settingKey="mc.fawryBal.basic" />
-            <Line label="رصيد اخر اساسي" value={D.basicBalClose} />
+            <tr className="tr"><td className="td" style={compactTd}>رصيد اخر اساسي</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.basicBalClose)} ج</ValueBox></td></tr>
             <EditableLine label="رصيد اول ايرتايم" settingKey="mc.fawryBal.air" />
-            <Line label="رصيد اخر ايرتايم" value={D.airBalClose} />
+            <tr className="tr"><td className="td" style={compactTd}>رصيد اخر ايرتايم</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.airBalClose)} ج</ValueBox></td></tr>
             <EditableLine label="رصيد اول كاش اوت" settingKey="mc.fawryBal.cashout" />
-            <Line label="رصيد اخر كاش اوت" value={D.cashoutBalClose} />
+            <tr className="tr"><td className="td" style={compactTd}>رصيد اخر كاش اوت</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.cashoutBalClose)} ج</ValueBox></td></tr>
+          </tbody></table>
+          </div>
+        </div>
+
+        {/* الأرصدة (المخزون) — نفس الفكرة، انتقلت هنا وتاخد نفس ارتفاع الصندوق تلقائيًا */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="📊" title="الأرصدة (المخزون)" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <table className="w-full" style={{ tableLayout: 'fixed' }}>
+            <thead><tr><th className="th" style={compactTh}>الصنف</th><th className="th text-left" style={compactTh}>أول</th><th className="th text-left" style={compactTh}>آخر</th><th className="th text-left" style={compactTh}>الفرق</th></tr></thead>
+            <tbody>
+              {view.inventoryTable.map((row: { label: string; start: number; end: number; startKey: string; endKey: string }) => {
+                const diff = row.end - row.start
+                return (
+                  <tr key={row.label} className="tr">
+                    <td className="td font-bold" style={compactTd}>{row.label}</td>
+                    <td className="td text-left" style={compactTd}><InvCell settingKey={row.startKey} value={row.start} disabled={isLocked} onSave={saveManual} /></td>
+                    <td className="td text-left" style={compactTd}><InvCell settingKey={row.endKey} value={row.end} disabled={isLocked} onSave={saveManual} /></td>
+                    <td className="td text-left" style={compactTd}><ValueBox fit color={diff >= 0 ? '#22c55e' : '#ef4444'}>{diff >= 0 ? '+' : ''}{fmt(diff)}</ValueBox></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+            <tfoot><tr style={{ borderTop: '2px solid var(--inner-border)' }}>
+              <td className="td font-bold" style={compactTd}>الإجمالي</td>
+              <td className="td text-left" style={compactTd}><ValueBox fit color={ACCENT}>{fmt(view.inventoryTable.reduce((a: number, r: { start: number }) => a + r.start, 0))}</ValueBox></td>
+              <td className="td text-left" style={compactTd}><ValueBox fit color={ACCENT}>{fmt(view.inventoryTable.reduce((a: number, r: { end: number }) => a + r.end, 0))}</ValueBox></td>
+              <td className="td text-left" style={compactTd}><ValueBox fit color={ACCENT}>{fmt(view.inventoryTable.reduce((a: number, r: { start: number; end: number }) => a + (r.end - r.start), 0))}</ValueBox></td>
+            </tr></tfoot>
+          </table>
+          </div>
+        </div>
+
+        {/* تكلفة البضاعة المباعة — انتقلت هنا يسار الأرصدة (المخزون) */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="📦" title="تكلفة البضاعة المباعة" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            <table className="w-full"><tbody>
+              <tr className="tr"><td className="td" style={compactTd}>رصيد أول المدة (يدوي)</td><td className="td text-left" style={compactTd}><ValueBox>{view.invStartEntered ? fmt(view.invStart) : '—'}</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>+ إجمالي المشتريات (تلقائي)</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.totalPurchases)}</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− مرتجع مشتريات</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.purchaseReturnsTotal)}</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− رصيد آخر المدة (يدوي)</td><td className="td text-left" style={compactTd}><ValueBox>{view.invEndEntered ? fmt(view.invEnd) : '—'}</ValueBox></td></tr>
+            </tbody></table>
+          </div>
+          <div className="px-3 pb-2 pt-2 flex items-center gap-2" style={{ borderTop: '1px solid var(--inner-border)' }}>
+            <span className="font-bold text-2xs" style={{ color: 'var(--txt-1)' }}>= تكلفة البضاعة:</span>
+            <MetricText m={view.cogs} accent={ACCENT} />
+          </div>
+        </div>
+      </div>
+
+      {/* الاستبدالات/الخسائر/مقارنة الشهر السابق/مؤشرات الربحية — تكلفة البضاعة اتنقلت لصف الأرصدة، فمكانها هنا فاضي */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-3">
+        {/* الاستبدالات — مراجعة فقط، صفر أثر على المبيعات/الربح/الهامش (قاعدة 4) */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="🎟️" title="الاستبدالات — للمراجعة فقط" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            <table className="w-full">
+              <tbody>
+                {view.exchangesRows.length === 0 && <tr><td className="td text-center" style={{ color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }} colSpan={2}>لا توجد بنود</td></tr>}
+                {view.exchangesRows.map((r: { label: string; value: number }) => (
+                  <tr key={r.label} className="tr"><td className="td" style={compactTd}>{r.label}</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(r.value)}</ValueBox></td></tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* الخسائر */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="📛" title="الخسائر" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+            <table className="w-full"><tbody>
+              {view.lossesRows.length === 0 && <tr><td className="td text-center" style={{ color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }} colSpan={2}>لا توجد بنود</td></tr>}
+              {view.lossesRows.map((r: { label: string; value: number }) => (
+                <tr key={r.label} className="tr"><td className="td" style={compactTd}>{r.label}</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(r.value)}</ValueBox></td></tr>
+              ))}
+            </tbody></table>
+          </div>
+          <div style={{ borderTop: `2px solid ${ACCENT}40`, background: ACCENT + '0d', display: 'flex', justifyContent: 'space-between', ...compactTd }}>
+            <span className="font-bold" style={{ color: ACCENT }}>الإجمالي</span>
+            <ValueBox color={ACCENT}>{fmt(view.totalLosses)}</ValueBox>
+          </div>
+        </div>
+
+
+        {/* مؤشرات الربحية — انتقلت يمين مقارنة الشهر السابق */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, display: 'flex', flexDirection: 'column' }}>
+          <SectionHeader icon="📈" title="مؤشرات الربحية" />
+          <div style={{ flex: 1, overflowY: 'auto' }}>
+          <table className="w-full" style={{ fontSize: 10.5, tableLayout: 'fixed' }}>
+            <colgroup><col style={{ width: '64%' }} /><col style={{ width: '36%' }} /></colgroup>
+            <tbody>
+              <tr className="tr"><td className="td" style={compactTd}>إجمالي المبيعات</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.totalSales)} ج</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− إجمالي المرتجعات (مبيعات)</td><td className="td text-left" style={compactTd}><ValueBox color="#ef4444">{fmt(view.salesReturnsTotal)} ج</ValueBox></td></tr>
+              <tr className="tr" style={{ borderTop: '1px solid var(--inner-border)' }}><td className="td font-bold" style={compactTd}>= صافي المبيعات</td><td className="td text-left" style={compactTd}><ValueBox>{fmt(view.netSales)} ج</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− تكلفة البضاعة المباعة <InfoIcon title="يحتاج إدخال رصيد أول وآخر المدة (بند «الأرصدة» أسفل) لحساب تكلفة البضاعة المباعة" /></td><td className="td text-left" style={compactTd}><MetricCell m={typeof view.cogs === 'number' ? -view.cogs : view.cogs} accent="#ef4444" /></td></tr>
+              <tr className="tr" style={{ borderTop: '1px solid var(--inner-border)' }}><td className="td font-bold" style={compactTd}>= مجمل الربح</td><td className="td text-left" style={compactTd}><MetricCell m={view.grossProfit} accent={ACCENT} /></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>هامش الربح الإجمالي</td><td className="td text-left" style={compactTd}><MetricCell m={view.grossMarginPct} suffix="%" /></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− إجمالي المصروفات</td><td className="td text-left" style={compactTd}><ValueBox color="#ef4444">{fmt(view.totalExpenses)} ج</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− إجمالي الإهلاكات</td><td className="td text-left" style={compactTd}><ValueBox color="#ef4444">{fmt(view.totalDepreciation)} ج</ValueBox></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>− إجمالي الخسائر</td><td className="td text-left" style={compactTd}><ValueBox color="#ef4444">{fmt(view.totalLosses)} ج</ValueBox></td></tr>
+              <tr className="tr" style={{ borderTop: '2px solid var(--inner-border)' }}><td className="td font-extrabold" style={compactTd}>= صافي الربح</td><td className="td text-left" style={compactTd}><MetricCell m={view.netProfit} accent={metricNum(isMissing(view.netProfit) ? 0 : view.netProfit) >= 0 ? '#22c55e' : '#ef4444'} /></td></tr>
+              <tr className="tr"><td className="td" style={compactTd}>صافي هامش الربح</td><td className="td text-left" style={compactTd}><MetricCell m={view.netMarginPct} suffix="%" /></td></tr>
+              <tr className="tr" style={{ borderTop: '1px solid var(--inner-border)' }}><td className="td" style={{ ...compactTd, color: 'var(--txt-3)' }}>إجمالي التحصيل <InfoIcon title="معلوماتي فقط — تسوية ذمم، لا يدخل في حساب الربح" /></td><td className="td text-left" style={compactTd}><ValueBox color="var(--txt-3)">{fmt(view.totalCollection)} ج</ValueBox></td></tr>
+            </tbody>
+          </table>
+          </div>
+        </div>
+
+        {/* مقارنة مع الشهر السابق — قاعدة 11 — انتقلت يسار مؤشرات الربحية — عرضها +50% بدون تحريك مكانها (تمتد على الفراغ يسارها) */}
+        <div className="card p-0 overflow-hidden" style={{ height: CARD5_H, width: '150%', display: 'flex', flexDirection: 'column' }}>
+        <SectionHeader icon="📊" title="مقارنة مع الشهر السابق" />
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+        <table className="w-full" style={{ tableLayout: 'fixed' }}>
+          <thead><tr><th className="th" style={compactTh}>المؤشر</th><th className="th text-left" style={compactTh}>هذا الشهر</th><th className="th text-left" style={compactTh}>السابق</th><th className="th text-left" style={compactTh}>الفرق</th><th className="th text-left" style={compactTh}>%</th></tr></thead>
+          <tbody>
+            {[
+              { label: 'صافي المبيعات', cur: view.netSales, prev: prevData?.totalSales },
+              { label: 'مجمل الربح', cur: isMissing(view.grossProfit) ? null : metricNum(view.grossProfit), prev: prevData?.grossProfit },
+              { label: 'صافي الربح', cur: isMissing(view.netProfit) ? null : metricNum(view.netProfit), prev: prevData?.netProfit },
+            ].map(r => {
+              if (r.cur === null) return (
+                <tr key={r.label} className="tr"><td className="td font-bold" style={compactTd}>{r.label}</td><td className="td text-left" style={compactTd} colSpan={4}><span title="بيانات ناقصة" style={{ cursor: 'help', color: '#f59e0b', fontWeight: 700 }}>⚠</span></td></tr>
+              )
+              const hasPrev = r.prev !== null && r.prev !== undefined
+              const diff = hasPrev ? r.cur - (r.prev as number) : 0
+              const pct = hasPrev && r.prev !== 0 ? (diff / Math.abs(r.prev as number)) * 100 : 0
+              return (
+                <tr key={r.label} className="tr">
+                  <td className="td font-bold" style={compactTd}>{r.label}</td>
+                  <td className="td text-left" style={compactTd}><ValueBox>{fmt(r.cur)} ج</ValueBox></td>
+                  <td className="td text-left" style={compactTd}>{hasPrev ? <ValueBox color="var(--txt-2)">{fmt(r.prev as number)} ج</ValueBox> : '—'}</td>
+                  <td className="td text-left" style={compactTd}>{hasPrev ? <ValueBox color={diff >= 0 ? '#22c55e' : '#ef4444'}>{(diff >= 0 ? '+' : '') + fmt(diff)}</ValueBox> : '—'}</td>
+                  <td className="td text-left" style={compactTd}>{hasPrev ? <ValueBox color={diff >= 0 ? '#22c55e' : '#ef4444'}>{(diff >= 0 ? '▲' : '▼') + ' ' + Math.abs(pct).toFixed(1) + '%'}</ValueBox> : <span title="الشهر السابق غير مُقفل" style={{ cursor: 'help' }}>—ⓘ</span>}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
+        </div>
+        </div>
       </div>
 
       <div className="card p-0 overflow-hidden">
@@ -1687,23 +2179,51 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin }: {
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>سجل الأشهر المقفلة ({saved.length})</span>
         </div>
         {saved.length === 0 ? (
-          <div className="text-center py-8 text-xs" style={{ color: 'var(--txt-3)' }}>لا توجد أشهر مقفلة بعد — اضغط "تقفيل شهر" لحفظ أول تقرير</div>
+          <div className="text-center py-8 text-xs" style={{ color: 'var(--txt-3)' }}>لا توجد أشهر مقفلة بعد — اضغط "اعتماد الشهر" لحفظ أول تقرير</div>
         ) : (
           <div className="divide-y" style={{ borderColor: 'var(--inner-border)' }}>
             {saved.map(r => {
               const d = (() => { try { return JSON.parse(r.data_json) } catch { return D } })()
               return (
                 <div key={r.id} className="flex items-center gap-3 px-4 py-2.5 flex-wrap">
-                  <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: 'rgba(139,92,246,0.15)', color: '#8b5cf6' }}>{r.month}</span>
+                  <span className="text-2xs px-2 py-0.5 rounded-md font-bold" style={{ background: PRIMARY + '15', color: PRIMARY }}>{r.month}</span>
                   <span className="text-xs" style={{ color: 'var(--txt-2)' }}>{d.shiftsCount} شيفت · {d.itemsCount} بند</span>
-                  <span className="tabular-nums text-xs mr-auto" style={{ color: '#22c55e' }}>مبيعات {fmt(d.totalSales ?? d.posSales ?? 0)}</span>
-                  <span className="tabular-nums text-xs font-bold" style={{ color: (d.netProfit ?? 0) >= 0 ? '#22c55e' : '#ef4444' }}>صافي {fmt(d.netProfit ?? 0)}</span>
+                  <span className="text-xs mr-auto" style={{ color: 'var(--txt-2)' }}>مبيعات <ValueBox color={ACCENT}>{fmt(d.totalSales ?? d.posSales ?? 0)}</ValueBox></span>
+                  <span className="text-xs" style={{ color: 'var(--txt-2)' }}>
+                    صافي {isMissing(d.netProfit) ? '—' : <ValueBox color={(d.netProfit ?? 0) >= 0 ? '#22c55e' : '#ef4444'}>{fmt(metricNum(d.netProfit ?? 0))}</ValueBox>}
+                  </span>
                   <button onClick={() => exportClosePDF(r.month, d)} className="btn-next btn-sm" style={{ fontSize: 10, padding: '3px 10px' }}>📄 PDF</button>
                 </div>
               )
             })}
           </div>
         )}
+      </div>
+
+      {/* شريط الاعتماد السفلي: إلغاء/اعتماد التقفيل + رسالة توضيحية عن التجميد + ملاحظات التقرير */}
+      <div className="card p-3 grid grid-cols-1 lg:grid-cols-[auto_1fr_auto] gap-3 items-start">
+        <div className="flex items-center gap-2">
+          {isLocked ? (
+            <button onClick={unapproveMonth} disabled={busy} className="btn-danger-pro" style={{ fontSize: 12, padding: '10px 20px' }}>
+              {busy ? <><Icons.Refresh size={13} className="animate-spin" /> جاري...</> : <>🔓 إلغاء التقفيل</>}
+            </button>
+          ) : (
+            <button onClick={approveMonth} disabled={busy || !canApprove} title={!canApprove ? D.diagnostics.find(d => d.blocking)?.text : undefined}
+              className="btn-success-pro" style={{ fontSize: 12, padding: '10px 20px', opacity: canApprove ? 1 : 0.5 }}>
+              {busy ? <><Icons.Refresh size={13} className="animate-spin" /> جاري...</> : <><Icons.Check size={13} /> اعتماد التقفيل الشهري</>}
+            </button>
+          )}
+        </div>
+        <div className="flex items-start gap-2 text-2xs" style={{ color: 'var(--txt-3)' }}>
+          <span style={{ fontSize: 16 }}>🛡️</span>
+          <span>بمجرد اعتماد التقفيل سيتم حفظ نسخة نهائية من التقرير، ولا يمكن التعديل على القيود الخاصة بالشهر إلا بعد إلغاء الاعتماد.</span>
+        </div>
+        <div style={{ minWidth: 260 }}>
+          <label className="text-2xs font-bold flex items-center gap-1 mb-1" style={{ color: 'var(--txt-2)' }}>📝 ملاحظات التقرير</label>
+          <textarea value={notes} onChange={e => saveNotes(e.target.value)} disabled={isLocked} placeholder="اكتب ملاحظاتك هنا..."
+            className="w-full text-xs rounded-lg p-2" rows={2}
+            style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)', color: 'var(--txt-1)', resize: 'vertical', opacity: isLocked ? 0.6 : 1 }} />
+        </div>
       </div>
     </div>
   )

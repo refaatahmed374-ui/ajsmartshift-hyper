@@ -18,6 +18,7 @@ import FawrySystem from './pages/FawrySystem'
 import Categories from './pages/Categories'
 import Parties from './pages/Parties'
 import About from './pages/About'
+import DraftAccounts from './pages/DraftAccounts'
 import TopBar from './components/TopBar'
 import Sidebar from './components/Sidebar'
 import PageTabsBar from './components/PageTabsBar'
@@ -31,13 +32,14 @@ export type Page =
   | 'settings'  | 'users'    | 'treasury'
   | 'fawry'     | 'categories' | 'about'
   | 'customers' | 'suppliers' | 'importExcel'
+  | 'draftAccounts'
 
 // v2.33.0 — تبويبات على مستوى كل الصفحات: أسماء العرض لكل صفحة (تُستخدم في شريط التبويبات)
 const PAGE_LABELS: Record<Page, string> = {
   dashboard: 'لوحة المعلومات', daily: 'العمليات اليومية', reports: 'التقارير', employees: 'إدارة الموظفين',
   settings: 'إعدادات النظام', users: 'صلاحيات المستخدمين', treasury: 'حسابات الصندوق', fawry: 'ماكينة فوري',
   categories: 'إدارة التصنيفات', about: 'حول البرنامج', customers: 'العملاء', suppliers: 'الموردون',
-  importExcel: 'استيراد اليومية',
+  importExcel: 'استيراد اليومية', draftAccounts: 'مسودة حسابات',
 }
 
 export default function App() {
@@ -109,6 +111,7 @@ export default function App() {
     customers:     <Parties type="customer" />,
     suppliers:     <Parties type="supplier" />,
     importExcel:   <ImportExcel />,
+    draftAccounts: <DraftAccounts />,
   }
 
   return (
