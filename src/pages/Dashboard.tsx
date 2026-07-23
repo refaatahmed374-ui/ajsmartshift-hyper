@@ -101,6 +101,10 @@ export default function Dashboard() {
   }
 
   const fawryWith = (s: Shift) => { const f = fawryMap[s.id]; return f ? calcFawryWithCommission(f.programSales, f.commissionPct) : 0 }
+  // v2.34.32 — شيفت "open" لسه ما اتقفلش: posSales/cashierRemaining لسه صفر افتراضي (لم يُدخَلا بعد)
+  // بينما بنود اليومية المُسجَّلة فعلاً أثناءه حقيقية → resultOf عليه بيطلع "أوفر" وهمي كبير (مصروفات/تحصيل حقيقيين ناقص صفر مبيعات).
+  // لازم يُستبعَد من كل إحصائيات الأوفر/العجز والمبيعات لحد ما يتقفل فعليًا (review/approved) وتبقى أرقامه حقيقية.
+  const isCounted = (s: Shift) => s.status !== 'open'
 
   const txByShift = useMemo(() => {
     const m: Record<number, Transaction[]> = {}
@@ -119,7 +123,7 @@ export default function Dashboard() {
 
   // ── تجميع الفترة الحالية ──
   const M = useMemo(() => {
-    const cur = allShifts.filter(s => inCur(s.date))
+    const cur = allShifts.filter(s => inCur(s.date) && isCounted(s))
     const curIds = new Set(cur.map(s => s.id))
     const tx = allTxs.filter(t => curIds.has(t.shiftId))
     const outByMain = (name: string) => tx.filter(t => t.mainCategoryName === name).reduce((a, t) => a + t.amountOut, 0)
@@ -130,7 +134,7 @@ export default function Dashboard() {
     const posOnly = cur.reduce((a, s) => a + (s.posSales ?? 0), 0)
     const fawryOnly = cur.reduce((a, s) => a + fawryWith(s), 0)
     const sales = posOnly + fawryOnly
-    const prevSales = allShifts.filter(s => inPrev(s.date)).reduce((a, s) => a + saleOf(s), 0)
+    const prevSales = allShifts.filter(s => inPrev(s.date) && isCounted(s)).reduce((a, s) => a + saleOf(s), 0)
     const purchases = outByMain('مشتريات')
     const meatPurchases = outByMainSub('مشتريات', 'مشتريات اللحوم')
     // v2.33.0 — "أجور" دُمجت داخل "مصروفات" (رواتب موظفين/سلفة موظف كتصنيفات فرعية)؛ تُستبعَد من
@@ -142,6 +146,8 @@ export default function Dashboard() {
     const credit = inBySub('مبيعات آجل')
     const delivery = inBySub('مبيعات توصيل')
     const deliveryCount = countBySub('مبيعات توصيل')
+    const visaCount = countBySub('مبيعات فيزا')
+    const creditCount = countBySub('مبيعات آجل')
     const meatSales = inBySub('مبيعات لحوم')
     const fawryCommissionProfit = cur.reduce((a, s) => { const f = fawryMap[s.id]; return a + (f ? Math.round(f.programSales * f.commissionPct / 10000) : 0) }, 0)
     const cashierCash = cur.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
@@ -188,7 +194,7 @@ export default function Dashboard() {
 
     return {
       cur, sales, posOnly, fawryOnly, prevSales, purchases, meatPurchases, expenses, wages,
-      collections, visa, credit, delivery, deliveryCount, meatSales, fawryCommissionProfit, cashierCash,
+      collections, visa, credit, delivery, deliveryCount, visaCount, creditCount, meatSales, fawryCommissionProfit, cashierCash,
       surplus, deficit, balanced, net, best, worst, payDist, itemsCount: tx.length,
       custodyAdd, custodyPaid, cashierPayVal, cashierNet,
       purchaseInvoiceCount, avgInvoice, maxInvoice,
@@ -211,7 +217,7 @@ export default function Dashboard() {
       months.push({ key: `${filterYear}-${String(mo).padStart(2, '0')}`, label: MONTHS[mo - 1] })
     }
     return months.map(m => {
-      const shiftsInMonth = allShifts.filter(s => s.date.slice(0, 7) === m.key)
+      const shiftsInMonth = allShifts.filter(s => s.date.slice(0, 7) === m.key && isCounted(s))
       const ids = new Set(shiftsInMonth.map(s => s.id))
       const tx = allTxs.filter(t => ids.has(t.shiftId))
       const salesVal = shiftsInMonth.reduce((a, s) => a + saleOf(s), 0)
@@ -227,7 +233,7 @@ export default function Dashboard() {
       const prevInvKey = `inventory.${prevMonthKey}`
       const prevInventoryVal = settingsMap[prevInvKey] ? Number(settingsMap[prevInvKey]) : 0
       const inventoryChangePct = prevInventoryVal > 0 ? ((inventoryVal - prevInventoryVal) / prevInventoryVal) * 100 : (inventoryVal > 0 ? 100 : 0)
-      const prevSalesVal = allShifts.filter(s => s.date.slice(0, 7) === prevMonthKey).reduce((a, s) => a + saleOf(s), 0)
+      const prevSalesVal = allShifts.filter(s => s.date.slice(0, 7) === prevMonthKey && isCounted(s)).reduce((a, s) => a + saleOf(s), 0)
       const salesChangePct = prevSalesVal > 0 ? ((salesVal - prevSalesVal) / prevSalesVal) * 100 : (salesVal > 0 ? 100 : 0)
       const profitVal = salesVal - purchasesVal - expensesVal
       const marginVal = salesVal > 0 ? (profitVal / salesVal) * 100 : 0
@@ -243,7 +249,7 @@ export default function Dashboard() {
     const avgMonthlyProfit = withData.length ? withData.reduce((a, m) => a + m.profit, 0) / withData.length : 0
     const itemsInWindow = twelveMonths.reduce((a, m) => a + m.txCount, 0)
     const windowKeys = new Set(twelveMonths.map(m => m.key))
-    const shiftsInWindow = allShifts.filter(s => windowKeys.has(s.date.slice(0, 7)))
+    const shiftsInWindow = allShifts.filter(s => windowKeys.has(s.date.slice(0, 7)) && isCounted(s))
     let best: { s: Shift; sale: number } | null = null
     let worst: { s: Shift; sale: number } | null = null
     for (const s of shiftsInWindow) {
@@ -329,6 +335,19 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* ═══ نُقلت أعلى البطاقات: حالة الأوفر/العجز + اتجاه المبيعات/المصروفات/الأرباح + مؤشر المبيعات (بنفس نسب الأعمدة الأصلية) ═══ */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr_1.7fr] gap-2 items-start">
+            <SalesDonut M={M} />
+            <div className="card p-2 flex flex-col" style={{ height: ROW2_H }}>
+              <CardTitle icon={<Icons.Reports size={13} />} title="المبيعات والمصروفات والأرباح — آخر 12 شهر" color="#3b82f6" />
+              <div className="flex-1 flex flex-col justify-center">
+                <MiniCombo data={chartData} height={140} formatter={v => `${fmt(v)} ج`} />
+              </div>
+            </div>
+            <NetGauge value={M.net} surplus={M.surplus} deficit={M.deficit} balanced={M.balanced}
+              visaCount={M.visaCount} creditCount={M.creditCount} deliveryCount={M.deliveryCount} />
+          </div>
+
           {/* ═══ 8 بطاقات مصغّرة — صفّان × 4 بطاقات متساوية بعرض الشاشة ═══ */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 items-stretch">
             <TopAccountCard title="حساب العهدة" icon={<Icons.Fund size={12} />} color="#f59e0b">
@@ -395,15 +414,14 @@ export default function Dashboard() {
             {/* ═══ العمود الأيسر (أقصى يمين الشاشة) — تحليل المبيعات ═══ */}
             <div className="space-y-1.5">
               <SalesAnalysis M={M} />
-              <SalesDonut M={M} />
             </div>
 
             {/* ═══ المنطقة الوسطى — أهم منطقة بصرية (بلا تمرير داخلي — تمرير الصفحة فقط) ═══ */}
             <div className="space-y-1.5">
               <div className="card p-0 overflow-hidden flex flex-col" style={{ height: PANEL_H }}>
-                <div className="px-3 py-1.5 flex items-center justify-between flex-shrink-0" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-                  <div className="flex items-center gap-1.5"><Icons.Reports size={12} style={{ color: 'var(--accent)' }} /><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt-1)' }}>اتجاه آخر 12 شهر</span></div>
-                  <span className="text-2xs" style={{ color: 'var(--txt-3)' }}>المخزون يُدخل يدوياً لكل شهر</span>
+                <div className="px-3 pt-2">
+                  <CardTitle icon={<Icons.Reports size={13} />} title="اتجاه آخر 12 شهر" color="#3b82f6"
+                    extra={<span className="text-2xs" style={{ color: 'var(--txt-3)' }}>المخزون يُدخل يدوياً لكل شهر</span>} />
                 </div>
                 <div className="flex-1 overflow-y-auto">
                   <table className="w-full text-2xs dash-compact-table">
@@ -432,21 +450,14 @@ export default function Dashboard() {
                   </table>
                 </div>
               </div>
-
-              <div className="card p-2 flex flex-col" style={{ height: ROW2_H }}>
-                <CardTitle icon={<Icons.Reports size={13} />} title="المبيعات والمصروفات والأرباح — آخر 12 شهر" color="#3b82f6" />
-                <div className="flex-1 flex flex-col justify-center">
-                  <MiniCombo data={chartData} height={140} formatter={v => `${fmt(v)} ج`} />
-                </div>
-              </div>
             </div>
 
             {/* ═══ العمود الأيمن (أقصى يسار الشاشة) — جدول الشيفتات ═══ */}
             <div className="space-y-1.5">
               <div className="card p-0 overflow-hidden flex flex-col" style={{ height: PANEL_H }}>
-                <div className="px-3 py-1.5 flex items-center justify-between flex-shrink-0" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-                  <div className="flex items-center gap-1.5"><Icons.Records size={12} style={{ color: 'var(--accent)' }} /><span style={{ fontSize: 11, fontWeight: 700, color: 'var(--txt-1)' }}>الشيفتات ({M.cur.length})</span></div>
-                  <span className="tabular-nums text-2xs" style={{ color: '#22c55e' }}>مبيعات {fmt(M.sales)} ج</span>
+                <div className="px-3 pt-2">
+                  <CardTitle icon={<Icons.Records size={13} />} title={`الشيفتات (${M.cur.length})`} color="#3b82f6"
+                    extra={<span className="tabular-nums text-2xs" style={{ color: '#22c55e' }}>مبيعات {fmt(M.sales)} ج</span>} />
                 </div>
                 {M.cur.length === 0 ? (
                   <div className="text-center py-6 text-2xs" style={{ color: 'var(--txt-3)' }}>لا توجد شيفتات في هذه الفترة</div>
@@ -478,7 +489,6 @@ export default function Dashboard() {
                   </div>
                 )}
               </div>
-              <NetGauge value={M.net} surplus={M.surplus} deficit={M.deficit} balanced={M.balanced} />
             </div>
           </div>
         </>
@@ -489,8 +499,17 @@ export default function Dashboard() {
 
 // ═══ مكوّنات مشتركة ═══
 
-function CardTitle({ icon, title, color = '#3b82f6' }: { icon: React.ReactNode; title: string; color?: string }) {
-  return <div className="flex items-center gap-1.5 mb-2 pb-1.5" style={{ borderBottom: '1px solid var(--inner-border)' }}><span style={{ color }}>{icon}</span><span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--txt-1)' }}>{title}</span></div>
+// v2.34.34 — رأس بطاقة موحّد لكل عناوين لوحة المعلومات (نفس حجم الخط/الأيقونة/المساحة/اللون المميز)؛ extra لعنصر جانبي اختياري (زي "مبيعات X ج")
+function CardTitle({ icon, title, color = '#3b82f6', extra }: { icon: React.ReactNode; title: string; color?: string; extra?: React.ReactNode }) {
+  return (
+    <div className="w-full flex items-center justify-between gap-1.5 mb-2 pb-1.5 flex-shrink-0" style={{ borderBottom: '1px solid var(--inner-border)' }}>
+      <div className="flex items-center gap-1.5">
+        <span style={{ color }}>{icon}</span>
+        <span style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--txt-1)' }}>{title}</span>
+      </div>
+      {extra}
+    </div>
+  )
 }
 
 /** بطاقة حساب مصغّرة للصف الأول — عنوان + شبكة صغيرة من القيم (نفس الارتفاع للأربعة) */
@@ -504,7 +523,9 @@ function TopAccountCard({ title, icon, color, cols = 2, children }: { title: str
 }
 
 /** عدّاد نصف دائري صغير للأوفر/العجز الإجمالي — أعلى العمود الأيمن */
-function NetGauge({ value, surplus, deficit, balanced }: { value: number; surplus: number; deficit: number; balanced: number }) {
+function NetGauge({ value, surplus, deficit, balanced, visaCount, creditCount, deliveryCount }: {
+  value: number; surplus: number; deficit: number; balanced: number; visaCount: number; creditCount: number; deliveryCount: number
+}) {
   const scale = Math.max(Math.abs(value) * 1.25, 100000)
   const ratio = Math.max(-1, Math.min(1, value / scale))
   const angle = ratio * 80
@@ -519,11 +540,9 @@ function NetGauge({ value, surplus, deficit, balanced }: { value: number; surplu
     'M 163.1 54.1 A 78 78 0 0 1 178.0 97.3',
   ]
   return (
-    <div className="card p-2 flex flex-col items-center" style={{ height: ROW2_H }}>
-      <div className="w-full flex items-center justify-between mb-0.5">
-        <span className="text-2xs font-bold" style={{ color: 'var(--txt-2)' }}>حالة الأوفر/العجز</span>
-        <span className="text-2xs font-black" style={{ color }}>{label}</span>
-      </div>
+    <div className="card p-2 flex flex-col items-center w-full" style={{ height: ROW2_H }}>
+      <CardTitle icon={<Icons.Reports size={13} />} title="حالة الأوفر/العجز" color="#3b82f6"
+        extra={<span className="text-2xs font-black" style={{ color }}>{label}</span>} />
       <div className="flex-1 flex items-center gap-3 w-full">
         <svg viewBox="0 0 200 118" style={{ width: 70, flexShrink: 0 }}>
           {segPaths.map((d, i) => <path key={i} d={d} fill="none" stroke={segs[i]} strokeWidth={13} strokeLinecap="round" opacity={0.92} />)}
@@ -539,6 +558,10 @@ function NetGauge({ value, surplus, deficit, balanced }: { value: number; surplu
           <MiniCount label="شيفتات أوفر" value={surplus} color="#22c55e" />
           <MiniCount label="شيفتات عجز" value={deficit} color="#ef4444" />
           <MiniCount label="شيفتات مطابقة" value={balanced} color="#f59e0b" />
+          {/* v2.34.31 — عدد عمليات فيزا/آجل/توصيل — مُكدَّسة بجوار العدادات الحالية بلا أي تغيير في أبعاد البطاقة */}
+          <MiniCount label="عمليات فيزا" value={visaCount} color="#3b82f6" />
+          <MiniCount label="عمليات آجل" value={creditCount} color="#8b5cf6" />
+          <MiniCount label="عمليات توصيل" value={deliveryCount} color="#f97316" />
         </div>
       </div>
     </div>

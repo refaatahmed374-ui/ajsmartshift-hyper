@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { Shift, ShiftFawry, ShiftCustody, Journal, Transaction } from '../../../core/types'
+import type { Shift, ShiftFawry, ShiftCustody, Journal } from '../../../core/types'
 import { detectShiftType, calcMonthlyShiftNum } from '../../../core/engine'
 import { assertMonthUnlocked } from './treasury'
 

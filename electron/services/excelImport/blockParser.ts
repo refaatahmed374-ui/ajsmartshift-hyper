@@ -10,7 +10,7 @@
  */
 import type { Workbook, Worksheet, Cell } from 'exceljs'
 import { normalizeArabic, normalizeValue } from './normalize'
-import type { ParseResult, RawShiftBlock, RawTransaction, RawFawry, RawClosing, RawOpeningBalance, WorkbookParser } from './types'
+import type { ParseResult, RawShiftBlock, RawFawry, RawClosing, RawOpeningBalance, WorkbookParser } from './types'
 import type { ShiftType } from '../../../core/types'
 
 const HDR_DATE = 'التاريخ'     // علامة بداية الكتلة (العمود A في صف الترويسة)

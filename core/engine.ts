@@ -31,12 +31,13 @@ export interface ShiftClosingInput {
 export interface ShiftClosingResult { result: number; status: BalanceStatus }
 
 /**
- * نتيجة إغلاق الشيفت — المعادلة الرسمية الوحيدة (ADR-012 v2 — مطابقة لتسوية شيت حورس):
- *   الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
+ * نتيجة إغلاق الشيفت — المعادلة الرسمية الوحيدة (v2.34.33 — تصحيح: التحصيل كان يُضاف فيُحتسَب مرتين
+ * لأن نقدية الكاشير أصلاً بتشمل أي تحصيل استلمه الكاشير خلال الشيفت؛ الصواب طرحه لعزله عن نقدية المبيعات):
+ *   الإغلاق = (نقدية الكاشير + مصروفات الكاشير − التحصيل) − مبيعات POS
  * موجب ⇒ أوفر (surplus) · سالب ⇒ عجز (deficit) · صفر ⇒ مطابق (balanced)
  */
 export function calcShiftClosing(i: ShiftClosingInput): ShiftClosingResult {
-  const result = i.cashierRemaining + i.cashierExpenses + i.collections - i.posSales
+  const result = (i.cashierRemaining + i.cashierExpenses - i.collections) - i.posSales
   const status: BalanceStatus = result > 0 ? 'surplus' : result < 0 ? 'deficit' : 'balanced'
   return { result, status }
 }

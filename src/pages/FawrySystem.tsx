@@ -125,7 +125,7 @@ export default function FawrySystem() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(({ shift: s, fawry: f, result: r }) => (
+                  {rows.map(({ shift: s, result: r }) => (
                     <tr key={s.id} className="tr">
                       <td className="td font-bold text-brand-400">#{s.monthlyShiftNum}</td>
                       <td className="td text-surface-400">{fmtDate(s.date)}</td>

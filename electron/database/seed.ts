@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import { initDefaultPermissions } from './repositories/permissions'
 import { normalizeValue } from '../services/excelImport/normalize'
+import { CANONICAL_CATEGORIES } from './canonicalCategories'
 
 export function seedDatabase(db: Database.Database): void {
   const userCount = (db.prepare('SELECT COUNT(*) as c FROM users').get() as { c: number }).c
@@ -47,30 +48,8 @@ export function seedDatabase(db: Database.Database): void {
   )
   for (const c of mainCats) insertMain.run(c.name, c.color, c.order, c.kind, c.accountingType)
 
-  // ===== التصنيفات الفرعية =====
-  const subCats: { main: string; subs: string[] }[] = [
-    { main: 'مبيعات',    subs: [
-        'مبيعات فيزا', 'مبيعات آجل', 'مبيعات توصيل', 'مبيعات لحوم',
-        'مبيعات نقدي', 'مبيعات رصيد فوري', 'مبيعات تطبيقات', 'أرباح بيع أصول', 'إيرادات متنوعة',
-      ] },
-    { main: 'تحصيل',     subs: ['تحصيل مبيعات آجلة', 'تحصيل مرتجع مشتريات'] },
-    { main: 'مرتجعات',   subs: ['مرتجع مبيعات', 'مرتجع مشتريات'] },
-    { main: 'مشتريات',   subs: [
-        'مشتريات عامة', 'مشتريات اللحوم', 'مشتريات فراخ', 'شحن ونقل', 'هوالك منتجات',
-        'إنتاج جبن', 'إنتاج فراخ', 'إنتاج لحوم', 'أدوات تغليف',
-        'بقالة', 'دواجن', 'ألبان', 'سجاير', 'خضار', 'رصيد فوري', 'استبدالات كوبونات',
-      ] },
-    { main: 'مصروفات',   subs: [
-        'صيانة', 'كهرباء', 'تليفون وإنترنت', 'مصاريف حكومية', 'إيجار', 'مياه', 'تأمينات', 'مرافق',
-        'رواتب موظفين', 'سلفة موظف', 'خصومات العملاء', 'أدوات تنظيف', 'أدوات مكتبية',
-        'ضرائب', 'إنترنت', 'صيانة أجهزة', 'أكياس', 'تغليف', 'دعاية', 'تسويق', 'غرامات',
-      ] },
-    { main: 'استبدالات', subs: ['كيمو استبدال', 'اسكويز استبدال', 'كوبونات آيس كريم', 'كوبونات عروض', 'كوبونات شركات'] },
-    { main: 'التكاليف',  subs: ['تكلفة البقالة', 'تكلفة الألبان', 'تكلفة اللحوم', 'تكلفة الدواجن', 'تكلفة الخضار'] },
-    { main: 'حقوق الملكية', subs: ['رأس المال', 'المسحوبات الشخصية', 'أرباح مستلمة', 'أرباح السنة الحالية'] },
-    { main: 'الاهلاكات', subs: ['اهلاك أصول'] },
-    { main: 'الخسائر',   subs: ['خسائر أخرى', 'ديون معدومة', 'فروق جرد', 'بضاعة تالفة'] },
-  ]
+  // ===== التصنيفات الفرعية ===== (v2.34.26 — من المرجع القانوني المعتمد المشترك، انظر canonicalCategories.ts)
+  const subCats = CANONICAL_CATEGORIES
   const getMainId = db.prepare(`SELECT id FROM main_categories WHERE name = ?`)
   const insertSub  = db.prepare(
     `INSERT INTO sub_categories (main_category_id, name, sort_order) VALUES (?, ?, ?)`

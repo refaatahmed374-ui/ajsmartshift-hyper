@@ -7,7 +7,6 @@ import KPICard from '../components/KPICard'
 import { MiniCombo } from '../components/MiniChart'
 import ShiftSheet from '../components/ShiftSheet'
 import { fmt, fmtDate, shiftTypeLabel, parsePias } from '../lib/format'
-import { generateShiftReportPDF } from '../lib/shiftReport'
 import { calcShiftClosing, calcFawry } from '../../core/engine'
 import { APP_VERSION } from '../version'
 import type { Shift, Transaction, EmployeeFinancials, ShiftFawry, MainCategory, SubCategory } from '../../core/types'
@@ -591,10 +590,6 @@ export default function Reports() {
 function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
   shifts: Shift[]; allTxs: Transaction[]; month: string; bizName: string; onReload: () => void;
 }) {
-  const PAY_LABELS: Record<string, string> = {
-    cashier: 'كاشير', management: 'الصندوق', credit: 'آجل', visa: 'فيزا',
-  }
-
   // ── نتيجة كل شيفت — المعادلة الرسمية الموحّدة (ADR-012 v2) ──
   // الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
   type Kind = 'surplus' | 'deficit' | 'balanced'
@@ -611,15 +606,6 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
     balanced: { bg: 'rgba(245,158,11,0.10)', border: 'rgba(245,158,11,0.45)', text: '#f59e0b', label: 'مطابق', glow: 'rgba(245,158,11,0.25)' },
   }
 
-  // ── العرض المكثّف (دبل كليك) ──
-  const [viewShift,   setViewShift]   = useState<Shift | null>(null)
-  const [viewTxs,     setViewTxs]     = useState<Transaction[]>([])
-  const [viewFawry,   setViewFawry]   = useState<any>(null)
-  const [viewCustody, setViewCustody] = useState<any>(null)
-  const [saving,      setSaving]      = useState(false)
-  const [pdfBusy,     setPdfBusy]     = useState(false)
-  // نماذج التعديل
-  const [closeForm,   setCloseForm]   = useState({ posSales: '', cashierRemaining: '' })
   // v2.27.0 (15-Jun) — حذف يومية
   const [deleteShift, setDeleteShift] = useState<Shift | null>(null)
   const [deleting,    setDeleting]    = useState(false)
@@ -637,53 +623,6 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
     } catch (e) { console.error(e) }
     finally { setDeleting(false) }
   }
-
-  async function openShift(s: Shift) {
-    setViewShift(s)
-    try {
-      const [txs, f, c] = await Promise.all([
-        call(api.tx.getByShift(s.id)) as Promise<Transaction[]>,
-        call(api.fawry.get(s.id)).catch(() => null),
-        call(api.custody.get(s.id)).catch(() => null),
-      ])
-      setViewTxs(txs)
-      setViewFawry(f)
-      setViewCustody(c)
-      setCloseForm({
-        posSales:         String((s.posSales ?? 0) / 100),
-        cashierRemaining: String((s.cashierRemaining ?? 0) / 100),
-      })
-    } catch (e) { console.error(e) }
-  }
-
-  async function saveEdits() {
-    if (!viewShift) return
-    setSaving(true)
-    try {
-      // حفظ تعديلات الإغلاق — v2.31.3: المعامل الثاني الآن هو cashierRemaining الفعلي (وليس expectedCash النظري)
-      const cashierRemaining = parsePias(closeForm.cashierRemaining || '0')
-      await call(api.shifts.close(
-        viewShift.id, cashierRemaining,
-        parsePias(closeForm.posSales || '0'),
-        cashierRemaining,
-      ))
-      setViewShift(null)
-    } catch (e) { console.error(e) }
-    finally { setSaving(false) }
-  }
-
-  async function exportShiftPDF(s: Shift) {
-    setPdfBusy(true)
-    try { await generateShiftReportPDF(s) } catch (e) { console.error(e) }
-    finally { setPdfBusy(false) }
-  }
-
-  // قيم فوري المحسوبة للعرض
-  const fawrySales = viewFawry ? {
-    basic:   (viewFawry.basicReceive   - viewFawry.basicDeliver)   + (viewFawry.cashoutToBasic ?? 0) + (viewFawry.fawryToBasic ?? 0),
-    air:     (viewFawry.airReceive     - viewFawry.airDeliver)     + (viewFawry.cashoutToAir ?? 0)   + (viewFawry.fawryToAir ?? 0),
-    cashout: (viewFawry.cashoutDeliver - viewFawry.cashoutReceive),
-  } : { basic: 0, air: 0, cashout: 0 }
 
   return (
     <div className="space-y-4">
@@ -754,177 +693,6 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
               </div>
             )
           })}
-        </div>
-      )}
-
-      {/* ═══ Modal العرض المكثف (دبل كليك) ═══ */}
-      {viewShift && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-          style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}
-          onClick={() => setViewShift(null)}>
-          <div className="card flex flex-col" style={{ width: '95vw', maxWidth: 1400, height: '92vh', padding: 0, overflow: 'hidden' }}
-            onClick={e => e.stopPropagation()}>
-            {/* رأس */}
-            <div className="flex items-center justify-between px-5 py-3 flex-shrink-0"
-              style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-              <div className="flex items-center gap-3">
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center"
-                  style={{ background: 'rgba(59,130,246,0.18)', color: 'var(--accent)' }}>
-                  <Icons.Eye size={18} />
-                </div>
-                <div>
-                  <div className="font-bold text-base" style={{ color: 'var(--txt-1)' }}>
-                    شيفت #{viewShift.monthlyShiftNum} — {viewShift.cashierName}
-                  </div>
-                  <div className="text-xs" style={{ color: 'var(--txt-3)' }}>
-                    {fmtDate(viewShift.date)} · {shiftTypeLabel(viewShift.type)}
-                  </div>
-                </div>
-              </div>
-              <button onClick={() => setViewShift(null)} className="p-2 rounded-lg hover:bg-white/10" style={{ color: 'var(--txt-2)' }}>
-                <Icons.Close size={16} />
-              </button>
-            </div>
-
-            {/* المحتوى المكثّف */}
-            <div className="flex-1 overflow-y-auto p-5 space-y-5">
-              {/* 1) بنود اليومية */}
-              <section>
-                <div className="flex items-center gap-2 mb-2 pb-2" style={{ borderBottom: '2px solid #22c55e' }}>
-                  <Icons.Journal size={15} style={{ color: '#22c55e' }} />
-                  <span className="font-bold text-sm" style={{ color: '#22c55e' }}>جدول بنود اليومية ({viewTxs.length})</span>
-                </div>
-                <div className="card p-0 overflow-hidden">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr>
-                        <th className="th">#</th><th className="th">الوقت</th><th className="th">البيان</th>
-                        <th className="th">التصنيف</th><th className="th">الدفع</th>
-                        <th className="th" style={{ color: '#22c55e' }}>وارد</th>
-                        <th className="th" style={{ color: '#ef4444' }}>منصرف</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {viewTxs.map((tx, i) => (
-                        <tr key={tx.id} className="tr">
-                          <td className="td tabular-nums" style={{ color: 'var(--txt-3)' }}>{i + 1}</td>
-                          <td className="td tabular-nums" style={{ color: 'var(--txt-3)' }}>{tx.time}</td>
-                          <td className="td font-medium">{tx.description}</td>
-                          <td className="td text-2xs" style={{ color: 'var(--txt-2)' }}>
-                            {tx.mainCategoryName}{tx.subCategoryName ? ' › ' + tx.subCategoryName : ''}
-                          </td>
-                          <td className="td">{PAY_LABELS[tx.payMethod] ?? tx.payMethod}</td>
-                          <td className="td tabular-nums font-bold" style={{ color: '#22c55e' }}>{tx.amountIn > 0 ? fmt(tx.amountIn) : ''}</td>
-                          <td className="td tabular-nums font-bold" style={{ color: '#ef4444' }}>{tx.amountOut > 0 ? fmt(tx.amountOut) : ''}</td>
-                        </tr>
-                      ))}
-                      {viewTxs.length === 0 && (
-                        <tr><td colSpan={7} className="td text-center py-4" style={{ color: 'var(--txt-3)' }}>لا توجد بنود</td></tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              {/* 2) تقفيل ماكينة فوري */}
-              <section>
-                <div className="flex items-center gap-2 mb-2 pb-2" style={{ borderBottom: '2px solid #8b5cf6' }}>
-                  <Icons.Fawry size={15} style={{ color: '#8b5cf6' }} />
-                  <span className="font-bold text-sm" style={{ color: '#8b5cf6' }}>جدول تقفيل ماكينة فوري</span>
-                </div>
-                {!viewFawry ? (
-                  <div className="text-center py-4 text-xs" style={{ color: 'var(--txt-3)' }}>لا توجد بيانات فوري</div>
-                ) : (
-                  <div className="card p-0 overflow-hidden">
-                    <table className="w-full text-xs text-center">
-                      <thead><tr>
-                        <th className="th text-right">الحركة</th>
-                        <th className="th">أساسي</th><th className="th">إير تايم</th><th className="th">كاش أوت</th>
-                      </tr></thead>
-                      <tbody>
-                        <tr className="tr">
-                          <td className="td text-right font-bold" style={{ color: '#22c55e' }}>⬇ استلام</td>
-                          <td className="td tabular-nums">{fmt(viewFawry.basicReceive)}</td>
-                          <td className="td tabular-nums">{fmt(viewFawry.airReceive)}</td>
-                          <td className="td tabular-nums">{fmt(viewFawry.cashoutReceive)}</td>
-                        </tr>
-                        <tr className="tr">
-                          <td className="td text-right font-bold" style={{ color: '#ef4444' }}>⬆ تسليم</td>
-                          <td className="td tabular-nums">{fmt(viewFawry.basicDeliver)}</td>
-                          <td className="td tabular-nums">{fmt(viewFawry.airDeliver)}</td>
-                          <td className="td tabular-nums">{fmt(viewFawry.cashoutDeliver)}</td>
-                        </tr>
-                        <tr className="tr" style={{ background: 'rgba(59,130,246,0.06)' }}>
-                          <td className="td text-right font-bold" style={{ color: 'var(--accent)' }}>✨ مبيعات</td>
-                          <td className="td tabular-nums font-bold" style={{ color: '#3b82f6' }}>{fmt(fawrySales.basic)}</td>
-                          <td className="td tabular-nums font-bold" style={{ color: '#8b5cf6' }}>{fmt(fawrySales.air)}</td>
-                          <td className="td tabular-nums font-bold" style={{ color: '#f59e0b' }}>{fmt(fawrySales.cashout)}</td>
-                        </tr>
-                      </tbody>
-                    </table>
-                    <div className="px-3 py-2 text-2xs" style={{ borderTop: '1px solid var(--inner-border)', color: 'var(--txt-3)' }}>
-                      مبيعات البرنامج: <b style={{ color: '#22c55e' }}>{fmt(viewFawry.programSales)} ج</b>
-                      &nbsp;·&nbsp; أول بون: <b>{viewFawry.firstVoucher}</b> · آخر بون: <b>{viewFawry.lastVoucher}</b>
-                    </div>
-                  </div>
-                )}
-              </section>
-
-              {/* 3) حسابات إغلاق الشيفت (قابلة للتعديل) */}
-              <section>
-                <div className="flex items-center gap-2 mb-2 pb-2" style={{ borderBottom: '2px solid #f59e0b' }}>
-                  <Icons.Fund size={15} style={{ color: '#f59e0b' }} />
-                  <span className="font-bold text-sm" style={{ color: '#f59e0b' }}>حسابات إغلاق الشيفت</span>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="rounded-xl p-3" style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.30)' }}>
-                    <label className="block text-2xs mb-1.5" style={{ color: '#3b82f6', fontWeight: 700 }}>مبيعات POS</label>
-                    <input className="field text-sm tabular-nums" type="number" min={0} value={closeForm.posSales}
-                      onChange={e => setCloseForm(f => ({ ...f, posSales: e.target.value }))} style={{ color: '#3b82f6', fontWeight: 700 }} />
-                  </div>
-                  <div className="rounded-xl p-3" style={{ background: 'rgba(34,197,94,0.08)', border: '1px solid rgba(34,197,94,0.30)' }}>
-                    <label className="block text-2xs mb-1.5" style={{ color: '#22c55e', fontWeight: 700 }}>نقدية متبقية</label>
-                    <input className="field text-sm tabular-nums" type="number" min={0} value={closeForm.cashierRemaining}
-                      onChange={e => setCloseForm(f => ({ ...f, cashierRemaining: e.target.value }))} style={{ color: '#22c55e', fontWeight: 700 }} />
-                  </div>
-                  <div className="rounded-xl p-3" style={{ background: 'rgba(6,182,212,0.06)', border: '1px solid rgba(6,182,212,0.25)' }}>
-                    <div className="text-2xs mb-1" style={{ color: 'var(--txt-3)' }}>تحصيلات (تلقائي)</div>
-                    <div className="text-sm font-bold tabular-nums" style={{ color: '#06b6d4' }}>{fmt(viewShift.cashierCollections ?? 0)} ج</div>
-                  </div>
-                  <div className="rounded-xl p-3" style={{ background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.25)' }}>
-                    <div className="text-2xs mb-1" style={{ color: 'var(--txt-3)' }}>مصروفات الشيفت (تلقائي)</div>
-                    <div className="text-sm font-bold tabular-nums" style={{ color: '#ef4444' }}>{fmt(viewShift.shiftExpenses ?? 0)} ج</div>
-                  </div>
-                  {viewCustody && (
-                    <>
-                      <div className="rounded-xl p-3" style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)' }}>
-                        <div className="text-2xs mb-1" style={{ color: 'var(--txt-3)' }}>إضافة من صندوق سابق</div>
-                        <div className="text-sm font-bold tabular-nums" style={{ color: 'var(--txt-1)' }}>{fmt(viewCustody.addFromFund)} ج</div>
-                      </div>
-                      <div className="rounded-xl p-3" style={{ background: 'rgba(245,158,11,0.06)', border: '1px solid rgba(245,158,11,0.25)' }}>
-                        <div className="text-2xs mb-1" style={{ color: 'var(--txt-3)' }}>إدارة محسوب</div>
-                        <div className="text-sm font-bold tabular-nums" style={{ color: '#f59e0b' }}>{fmt(viewCustody.managementPaid)} ج</div>
-                      </div>
-                    </>
-                  )}
-                </div>
-              </section>
-            </div>
-
-            {/* فوتر */}
-            <div className="flex items-center justify-between px-5 py-3 flex-shrink-0"
-              style={{ borderTop: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-              <button onClick={() => exportShiftPDF(viewShift)} disabled={pdfBusy} className="btn-next btn-sm" style={{ fontSize: 12 }}>
-                {pdfBusy ? <><Icons.Refresh size={12} className="animate-spin" /> جاري...</> : <>📄 تقرير PDF</>}
-              </button>
-              <div className="flex items-center gap-2">
-                <button onClick={saveEdits} disabled={saving} className="btn-success-pro" style={{ fontSize: 13, padding: '8px 20px' }}>
-                  {saving ? <><Icons.Refresh size={13} className="animate-spin" /> جاري الحفظ...</> : <><Icons.Save size={14} /> حفظ التعديلات</>}
-                </button>
-                <button onClick={() => setViewShift(null)} className="btn-ghost btn-sm">إغلاق</button>
-              </div>
-            </div>
-          </div>
         </div>
       )}
 
@@ -1446,9 +1214,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
     } catch { /* */ }
   }
   useEffect(() => {
-    let alive = true
     loadAuxData().catch(() => {})
-    return () => { alive = false }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [month, shifts])
 

@@ -3,6 +3,23 @@ import { existsSync, copyFileSync } from 'fs'
 import { seedDatabase } from './seed'
 import { initDefaultPermissions } from './repositories/permissions'
 import { dbPath as dataDbPath, legacyDbPath } from '../paths'
+import { normalizeArabic } from '../services/excelImport/normalize'
+import { CANONICAL_CATEGORIES } from './canonicalCategories'
+
+// v2.34.26 — نفس مرجع حارس التصنيفات (repositories/transactions.ts) لتصحيح التصنيفات القائمة تلقائيًا
+const CANONICAL_SUB_TO_MAIN = new Map<string, string>()
+for (const g of CANONICAL_CATEGORIES) for (const s of g.subs) CANONICAL_SUB_TO_MAIN.set(normalizeArabic(s), g.main)
+
+// يُرحِّل كل الإشارات (قيود اليومية + التسميات الذكية + قواعد تعيين الاستيراد) من تصنيف فرعي مكرر (loserId)
+// إلى الناجي (survivorId) ثم يحذف المكرر — يُستخدم في تصحيح التصنيفات التلقائي عند بدء التشغيل
+function mergeSubCategory(db: Database.Database, loserId: number, survivorId: number): void {
+  if (loserId === survivorId) return
+  db.prepare(`UPDATE transactions SET sub_category_id=? WHERE sub_category_id=?`).run(survivorId, loserId)
+  db.prepare(`UPDATE smart_labels SET sub_category_id=? WHERE sub_category_id=?`).run(survivorId, loserId)
+  db.prepare(`UPDATE import_category_map SET sub_category_id=? WHERE sub_category_id=?`).run(survivorId, loserId)
+  db.prepare(`DELETE FROM sub_categories WHERE id=?`).run(loserId)
+  console.log(`[categories self-heal] دُمج تصنيف فرعي مكرر (id=${loserId}) في (id=${survivorId})`)
+}
 
 const SCHEMA = `
 PRAGMA journal_mode = WAL;
@@ -702,6 +719,39 @@ export function getDb(): Database.Database {
   try {
     _db.prepare(`INSERT OR IGNORE INTO branches (id, name, address) VALUES (1, 'الفرع الرئيسي', '')`).run()
   } catch (e) { console.error('Branch#1 self-heal error:', e) }
+
+  // v2.34.26 — تصحيح تلقائي للتصنيفات الفرعية (مرة كل تشغيل — لا يفعل شيئًا لو كانت التصنيفات سليمة أصلاً):
+  // (1) أي تصنيف فرعي معروف بالمرجع المعتمد لكنه موضوع تحت رئيسي خطأ يُنقَل لرئيسيه الصحيح
+  //     (أو يُدمَج لو كان يوجد بالفعل نظير له تحت الرئيسي الصحيح).
+  // (2) أي تصنيفين فرعيين بنفس الاسم (بعد التطبيع: همزات/مسافات/تاء مربوطة) في أي مكان يُدمَجان في واحد.
+  try {
+    const mainByName = new Map((_db.prepare(`SELECT id, name FROM main_categories`).all() as { id: number; name: string }[]).map(m => [m.name, m.id]))
+
+    let subs = _db.prepare(`SELECT id, main_category_id, name FROM sub_categories`).all() as { id: number; main_category_id: number; name: string }[]
+    for (const s of subs) {
+      const correctMain = CANONICAL_SUB_TO_MAIN.get(normalizeArabic(s.name))
+      if (!correctMain) continue
+      const correctMainId = mainByName.get(correctMain)
+      if (!correctMainId || correctMainId === s.main_category_id) continue
+      const existing = subs.find(o => o.id !== s.id && o.main_category_id === correctMainId && normalizeArabic(o.name) === normalizeArabic(s.name))
+      if (existing) {
+        mergeSubCategory(_db, s.id, existing.id)
+      } else {
+        _db.prepare(`UPDATE sub_categories SET main_category_id=? WHERE id=?`).run(correctMainId, s.id)
+        console.log(`[categories self-heal] نُقل التصنيف الفرعي "${s.name}" إلى التصنيف الرئيسي الصحيح "${correctMain}"`)
+      }
+    }
+
+    // إعادة القراءة بعد خطوة النقل/الدمج أعلاه، ثم دمج أي تكرار متبقٍ بنفس الاسم المُطبَّع (بغضّ النظر عن الرئيسي)
+    subs = _db.prepare(`SELECT id, main_category_id, name FROM sub_categories ORDER BY id`).all() as { id: number; main_category_id: number; name: string }[]
+    const seenByKey = new Map<string, number>()
+    for (const s of subs) {
+      const key = normalizeArabic(s.name)
+      const survivorId = seenByKey.get(key)
+      if (survivorId === undefined) { seenByKey.set(key, s.id); continue }
+      mergeSubCategory(_db, s.id, survivorId)
+    }
+  } catch (e) { console.error('Categories self-heal error:', e) }
 
   return _db
 }

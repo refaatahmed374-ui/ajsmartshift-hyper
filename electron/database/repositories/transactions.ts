@@ -2,6 +2,13 @@ import type Database from 'better-sqlite3'
 import type { Transaction, SmartLabel, MainCategory, SubCategory } from '../../../core/types'
 import { addLedgerEntry } from './parties'
 import { assertMonthUnlocked } from './treasury'
+import { normalizeArabic } from '../../services/excelImport/normalize'
+import { CANONICAL_CATEGORIES } from '../canonicalCategories'
+
+// v2.34.26 — حارس التصنيفات: اعتماد التصنيفات الحالية (canonicalCategories.ts) كمرجع صحيح —
+// خريطة "اسم التصنيف الفرعي (مُطبَّع)" ← "اسم التصنيف الرئيسي الصحيح المعتمد"
+const CANONICAL_SUB_TO_MAIN = new Map<string, string>()
+for (const g of CANONICAL_CATEGORIES) for (const s of g.subs) CANONICAL_SUB_TO_MAIN.set(normalizeArabic(s), g.main)
 
 // يحسم تاريخ الشيفت لقيد ما (عبر shift_id) لأغراض حارس القفل الشهري
 function shiftDateOfTx(db: Database.Database, txId: number): string | undefined {
@@ -268,25 +275,61 @@ export function deleteMainCategory(
 }
 
 // ===== CRUD التصنيفات الفرعية =====
+// v2.34.26 — يبحث هل الاسم (بعد التطبيع) يخصّ تصنيفًا فرعيًا آخر موجودًا فعليًا (أي رئيسي)، لمنع تكرار
+function findDuplicateSubByName(db: Database.Database, name: string, excludeId?: number): { id: number; name: string; mainName: string } | undefined {
+  const key = normalizeArabic(name)
+  const rows = db.prepare(
+    `SELECT sc.id, sc.name, mc.name AS main_name FROM sub_categories sc
+     JOIN main_categories mc ON mc.id = sc.main_category_id
+     WHERE sc.id != COALESCE(?, -1)`
+  ).all(excludeId ?? null) as { id: number; name: string; main_name: string }[]
+  const hit = rows.find(r => normalizeArabic(r.name) === key)
+  return hit ? { id: hit.id, name: hit.name, mainName: hit.main_name } : undefined
+}
+
 export function createSubCategory(
   db: Database.Database,
   data: { mainCategoryId: number; name: string }
-): number {
+): { ok: boolean; id?: number; reason?: string } {
+  const key = normalizeArabic(data.name)
+  const correctMain = CANONICAL_SUB_TO_MAIN.get(key)
+  if (correctMain) {
+    const correctMainRow = db.prepare(`SELECT id FROM main_categories WHERE name=?`).get(correctMain) as { id: number } | undefined
+    if (correctMainRow && correctMainRow.id !== data.mainCategoryId)
+      return { ok: false, reason: `هذا التصنيف الفرعي "${data.name.trim()}" يجب أن يكون تحت التصنيف الرئيسي "${correctMain}"` }
+  }
+  const dup = findDuplicateSubByName(db, data.name)
+  if (dup) return { ok: false, reason: `هذا التصنيف الفرعي موجود بالفعل باسم "${dup.name}" تحت "${dup.mainName}"` }
+
   const maxOrder = (db.prepare(
     `SELECT COALESCE(MAX(sort_order),0) AS m FROM sub_categories WHERE main_category_id=?`
   ).get(data.mainCategoryId) as { m: number }).m
   const res = db.prepare(
     `INSERT INTO sub_categories (main_category_id, name, sort_order) VALUES (?, ?, ?)`
   ).run(data.mainCategoryId, data.name.trim(), maxOrder + 1)
-  return res.lastInsertRowid as number
+  return { ok: true, id: res.lastInsertRowid as number }
 }
 
 export function updateSubCategory(
   db: Database.Database,
   id: number,
   name: string
-): void {
+): { ok: boolean; reason?: string } {
+  const current = db.prepare(`SELECT main_category_id FROM sub_categories WHERE id=?`).get(id) as { main_category_id: number } | undefined
+  if (!current) return { ok: false, reason: 'التصنيف الفرعي غير موجود' }
+
+  const key = normalizeArabic(name)
+  const correctMain = CANONICAL_SUB_TO_MAIN.get(key)
+  if (correctMain) {
+    const correctMainRow = db.prepare(`SELECT id FROM main_categories WHERE name=?`).get(correctMain) as { id: number } | undefined
+    if (correctMainRow && correctMainRow.id !== current.main_category_id)
+      return { ok: false, reason: `الاسم "${name.trim()}" معروف كتصنيف فرعي تحت "${correctMain}" — لا يمكن استخدامه هنا` }
+  }
+  const dup = findDuplicateSubByName(db, name, id)
+  if (dup) return { ok: false, reason: `هذا التصنيف الفرعي موجود بالفعل باسم "${dup.name}" تحت "${dup.mainName}"` }
+
   db.prepare(`UPDATE sub_categories SET name=? WHERE id=?`).run(name.trim(), id)
+  return { ok: true }
 }
 
 export function deleteSubCategory(

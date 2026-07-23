@@ -92,7 +92,6 @@ interface DonutProps {
 }
 
 export function MiniDonut({ data, height = 200, centerLabel, centerValue, centerValueSize = 18, formatter }: DonutProps) {
-  const total = data.reduce((s, d) => s + d.value, 0)
   return (
     <div className="relative">
       <ResponsiveContainer width="100%" height={height}>

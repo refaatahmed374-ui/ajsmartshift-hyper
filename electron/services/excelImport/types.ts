@@ -2,7 +2,7 @@
  * أنواع محرّك استيراد Excel (مشتركة بين المكوّنات).
  * البنية: Workbook → Worksheet → ShiftBlock → Transactions
  */
-import type { ShiftType, PayMethod } from '../../../core/types'
+import type { ShiftType } from '../../../core/types'
 
 /** معاملة خام كما قُرئت من الإكسل (قبل التحقّق والتعيين النهائي). */
 export interface RawTransaction {

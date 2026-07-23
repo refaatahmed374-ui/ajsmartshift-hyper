@@ -23,8 +23,6 @@ export default function Categories() {
   const [subCats,  setSubCats]  = useState<SubCategory[]>([])
   const [loading,  setLoading]  = useState(false)
 
-  // توسيع/طي التصنيف الرئيسي (للتوافق)
-  const [expanded, setExpanded] = useState<Record<number, boolean>>({})
   // v2.27.0 (15-Jun) — التصنيف الرئيسي المحدد (تصميم master-detail)
   const [selectedMainId, setSelectedMainId] = useState<number | null>(null)
 
@@ -105,17 +103,16 @@ export default function Categories() {
   }
 
   // ===== حفظ تصنيف فرعي =====
+  // v2.34.26 — createSub/updateSub بقيا يرجّعوا { ok, reason? } (حارس التصنيفات: مكان خطأ / تكرار)
   async function handleSaveSub() {
     if (!subForm.name.trim()) { show('أدخل اسم التصنيف الفرعي', 'warning'); return }
     setSavingSub(true)
     try {
-      if (editingSub) {
-        await call(api.cats.updateSub(editingSub.id, subForm.name))
-        show('تم تعديل التصنيف الفرعي ✓', 'success')
-      } else {
-        await call(api.cats.createSub({ mainCategoryId: subForm.mainCategoryId, name: subForm.name }))
-        show('تم إضافة التصنيف الفرعي ✓', 'success')
-      }
+      const res = editingSub
+        ? await call(api.cats.updateSub(editingSub.id, subForm.name)) as { ok: boolean; reason?: string }
+        : await call(api.cats.createSub({ mainCategoryId: subForm.mainCategoryId, name: subForm.name })) as { ok: boolean; reason?: string }
+      if (!res.ok) { show(res.reason ?? 'تعذّر الحفظ', 'error'); return }
+      show(editingSub ? 'تم تعديل التصنيف الفرعي ✓' : 'تم إضافة التصنيف الفرعي ✓', 'success')
       setSubModal(false)
       await load()
       window.dispatchEvent(new CustomEvent('categories:changed'))
@@ -151,10 +148,6 @@ export default function Categories() {
       window.dispatchEvent(new CustomEvent('categories:changed'))
     } catch (e) { show((e as Error).message, 'error') }
     finally { setDeleting(false) }
-  }
-
-  function toggleExpand(id: number) {
-    setExpanded(p => ({ ...p, [id]: !p[id] }))
   }
 
   return (

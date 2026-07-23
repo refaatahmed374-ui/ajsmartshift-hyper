@@ -5,6 +5,7 @@ import { useToast } from '../store/toast'
 import { useAuth } from '../store/auth'
 import { useFloatingWindows } from '../store/floatingWindows'
 import { calcFawry, calcCustody, calcFawryWithCommission, calcShiftClosing } from '../../core/engine'
+import { generateShiftReportPDF } from '../lib/shiftReport'
 import type {
   Shift, Journal, Transaction, ShiftFawry, ShiftCustody,
   MainCategory, SubCategory, PayMethod, Employee,
@@ -21,13 +22,13 @@ const fmt0 = (pias: number) => (pias / 100).toLocaleString('en-US', { maximumFra
 // طرق الدفع — نوعان فقط (كاشير/إدارة). آجل/فيزا يُتتبَّعان بالتصنيف الفرعي.
 const PAY: Record<PayMethod, string> = { cashier: 'كاشير', management: 'إدارة' }
 const PAY_OPTIONS: PayMethod[] = ['cashier', 'management']
-const SHIFT_TYPE: Record<string, string> = { morning: '🌅 صباحي', evening: '🌙 مسائي', between: '🌇 بيني' }
 const DEFAULT_ROWS = 14
 
 interface Props { shiftId: number; onClose?: () => void; onDeleted?: () => void; onChanged?: () => void; embedded?: boolean }
 
-interface TxDraft { description: string; amount: string; mainCategoryId: number; subCategoryId: number; payMethod: PayMethod; direction: 'in' | 'out'; employeeId: number }
-const emptyDraft: TxDraft = { description: '', amount: '', mainCategoryId: 0, subCategoryId: 0, payMethod: 'cashier', direction: 'out', employeeId: 0 }
+// v2.34.18 — payMethod يقبل '' (لا شيء) شكليًا فقط في المسودة — نفس مبدأ "—" في التصنيف الرئيسي/الفرعي، بلا حفظ فعلي بلا اختيار
+interface TxDraft { description: string; amount: string; mainCategoryId: number; subCategoryId: number; payMethod: PayMethod | ''; direction: 'in' | 'out'; employeeId: number }
+const emptyDraft: TxDraft = { description: '', amount: '', mainCategoryId: 0, subCategoryId: 0, payMethod: '', direction: 'out', employeeId: 0 }
 const G = { edit: '#22c55e', fawry: '#a78bfa', sum: '#fbbf24', warn: '#f87171' }
 const rows = (n: number) => Array.from({ length: Math.max(0, n) }, () => ({ ...emptyDraft }))
 // v2.34.14 — عدّاد فلوس مصري + آلة حاسبة (أداة مساعدة منقولة من مسودة حسابات)
@@ -39,6 +40,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const { user } = useAuth()
   const { open: openWindow } = useFloatingWindows()
   const [shift, setShift] = useState<Shift | null>(null)
+  const [pdfBusy, setPdfBusy] = useState(false)
   const [journal, setJournal] = useState<Journal | null>(null)
   const [txs, setTxs] = useState<Transaction[]>([])
   const [fawry, setFawry] = useState<ShiftFawry | null>(null)
@@ -109,6 +111,17 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     }
     catch (e) { toast.show((e as Error).message, 'error') }
   }
+  // v2.34.17 — أول/آخر بون أرقام عمليات صحيحة (مش مبالغ) — بلا أي ضرب/قسمة ×100 خلافًا لباقي حقول فوري
+  async function saveVoucher(field: 'firstVoucher' | 'lastVoucher', raw: string) {
+    if (!fawry) return
+    const val = parseInt(raw, 10) || 0
+    try {
+      await call(api.fawry.update(shiftId, { [field]: val }))
+      setFawry({ ...fawry, [field]: val })
+      onChanged?.()
+    }
+    catch (e) { toast.show((e as Error).message, 'error') }
+  }
   async function saveCustody(field: 'addFromFund' | 'managementPaid', egp: string) {
     if (!custody) return
     const val = parsePias(egp)
@@ -121,10 +134,6 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     const posSales = field === 'posSales' ? val : shift.posSales
     const cashierRemaining = field === 'cashierRemaining' ? val : shift.cashierRemaining
     try { await call(api.shifts.updateCloseInputs(shiftId, { posSales, cashierRemaining })); await load(); onChanged?.() }
-    catch (e) { toast.show((e as Error).message, 'error') }
-  }
-  async function saveOpening(egp: string) {
-    try { await call(api.shifts.updateOpening(shiftId, parsePias(egp))); await load(); onChanged?.() }
     catch (e) { toast.show((e as Error).message, 'error') }
   }
   async function saveMeta(data: { date?: string; type?: 'morning' | 'evening' | 'between'; cashierName?: string }) {
@@ -152,6 +161,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   }
   async function saveEdit() {
     if (editId == null) return
+    if (!draft.payMethod) { toast.show('برجاء اختيار طريقة الدفع', 'error'); return }
     const amt = parsePias(draft.amount)
     try {
       const eIn = (draft.mainCategoryId === (mains.find(m => m.name === 'تحصيل')?.id ?? -1))
@@ -162,6 +172,25 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   }
 
   function setDraftRow(i: number, patch: Partial<TxDraft>) { setDrafts(ds => ds.map((d, idx) => idx === i ? { ...d, ...patch } : d)) }
+
+  // v2.34.16 — لصق عمود كامل من إكسيل: تحديد أول خلية فقط (بيان أو قيمة) ولصق (Ctrl+V) يوزّع الأسطر تلقائيًا لتحت في الصفوف التالية
+  // بيوسّع صفوف المسودة تلقائيًا لو عدد الأسطر الملصوقة أكبر من الصفوف المتاحة — بلا أي تأثير على شكل القسم أو استيراد الإكسيل الرسمي
+  function handleColumnPaste(i: number, field: 'amount' | 'description', e: React.ClipboardEvent) {
+    const text = e.clipboardData.getData('text')
+    const lines = text.split(/\r\n|\r|\n/)
+    while (lines.length && lines[lines.length - 1] === '') lines.pop() // آخر سطر فاضي شائع عند نسخ عمود من إكسيل
+    if (lines.length <= 1) return // لصق عادي لخلية واحدة — نسيبه للسلوك الافتراضي
+    e.preventDefault()
+    setDrafts(ds => {
+      const next = [...ds]
+      while (next.length < i + lines.length) next.push({ ...emptyDraft })
+      lines.forEach((line, idx) => {
+        const val = field === 'amount' ? line.replace(/[,\s]/g, '') : line.trim()
+        next[i + idx] = { ...next[i + idx], [field]: val }
+      })
+      return next
+    })
+  }
 
   // v2.34.3 — تخمين تلقائي للتصنيف بناءً على بيانات مُدخلة سابقاً (يتعلّم من كل بند يُحفظ عبر smart_labels)
   const suggestTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
@@ -194,8 +223,13 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
 
   async function commitDrafts() {
     if (!journal) return
-    const filled = drafts.filter(d => d.description.trim() && d.amount)
-    if (!filled.length) { toast.show('لا توجد بنود مملوءة للحفظ', 'info'); return }
+    // v2.34.18 — بند بدون طريقة دفع مُختارة يُعامَل كغير مكتمل (لا يُحفظ) تمامًا كبند بدون بيان/قيمة
+    const filled = drafts.filter(d => d.description.trim() && d.amount && d.payMethod)
+    const missingPay = drafts.filter(d => d.description.trim() && d.amount && !d.payMethod)
+    if (!filled.length) {
+      toast.show(missingPay.length ? 'برجاء اختيار طريقة الدفع للبنود قبل الحفظ' : 'لا توجد بنود مملوءة للحفظ', missingPay.length ? 'error' : 'info')
+      return
+    }
     try {
       const collectId = mains.find(m => m.name === 'تحصيل')?.id ?? -1
       await call(api.tx.addBatch(filled.map(d => ({
@@ -207,13 +241,22 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
       // ADR-012 v2 — بعد الحفظ: أعِد صفوفاً فارغة فقط حتى إجمالي 14 (لا تُنشئ صفوفاً إضافية تلقائياً)
       const newTotal = txs.length + filled.length
       setDrafts(rows(DEFAULT_ROWS - newTotal))
-      await load(); onChanged?.(); toast.show(`حُفظ ${filled.length} بند`, 'success')
+      await load(); onChanged?.()
+      toast.show(missingPay.length ? `حُفظ ${filled.length} بند — و${missingPay.length} بند لم يُحفظ لعدم اختيار طريقة الدفع` : `حُفظ ${filled.length} بند`, missingPay.length ? 'info' : 'success')
     } catch (e) { toast.show((e as Error).message, 'error') }
   }
   function dupLast() {
     const last = txs[txs.length - 1]; if (!last) { toast.show('لا يوجد بند لتكراره', 'info'); return }
     const nd: TxDraft = { description: last.description, amount: String((last.amountIn || last.amountOut) / 100), mainCategoryId: last.mainCategoryId ?? 0, subCategoryId: last.subCategoryId ?? 0, payMethod: last.payMethod, direction: last.amountIn > 0 ? 'in' : 'out', employeeId: last.employeeId ?? 0 }
     setDrafts(ds => { const idx = ds.findIndex(d => !d.description && !d.amount); if (idx >= 0) { const c = [...ds]; c[idx] = nd; return c } return [...ds, nd] })
+  }
+  // v2.34.29 — "تصدير" كان مجرد نص "قريباً" بلا وظيفة فعلية؛ ربطه بمولّد تقرير PDF الفعلي (صفحتان: بنود + ملخّص)
+  async function exportPDF() {
+    if (!shift || pdfBusy) return
+    setPdfBusy(true)
+    try { await generateShiftReportPDF(shift) }
+    catch (e) { toast.show((e as Error).message, 'error') }
+    finally { setPdfBusy(false) }
   }
   async function delShift() {
     if (!confirm('حذف الشيفت وكل بياناته نهائياً؟')) return
@@ -280,6 +323,13 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const advanceMainId = mains.find(m => m.name === 'مصروفات')?.id ?? -1
   const advanceSubId  = subs.find(s => s.name === 'سلفة موظف')?.id ?? -1
   const isAdvanceRow = (mainCatId: number, subCatId: number) => mainCatId === advanceMainId && subCatId === advanceSubId
+  // v2.34.17 — عدد عمليات البيع = فرق رقمي البون (إحصائي فقط، لا يدخل في أي حساب)
+  const saleOpsCount = (fawry?.firstVoucher ?? 0) > 0 && (fawry?.lastVoucher ?? 0) > 0
+    ? Math.max(0, (fawry!.lastVoucher - fawry!.firstVoucher) + 1) : 0
+  // عدد عمليات التوصيل = عدد بنود اليومية (محفوظ + قيد الكتابة) بتصنيف فرعي "مبيعات توصيل" — إحصائي فقط
+  const deliverySubId = subs.find(s => s.name === 'مبيعات توصيل')?.id ?? -1
+  const deliveryOpsCount = txs.filter(t => t.subCategoryId === deliverySubId).length
+    + drafts.filter(d => d.subCategoryId === deliverySubId && d.description.trim() && d.amount).length
   const amt = (t: Transaction) => t.amountIn + t.amountOut
   const mgmtOut = txs.filter(t => t.payMethod === 'management').reduce((s, t) => s + t.amountOut, 0)
     + dSum(d => d.payMethod === 'management')                                                          // مصروفات الصندوق
@@ -288,6 +338,13 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const creditSubId = subs.find(s => s.name === 'مبيعات آجل')?.id ?? -1
   const creditTx = txs.filter(t => t.subCategoryName === 'مبيعات آجل').reduce((s, t) => s + amt(t), 0) + dSum(d => d.subCategoryId === creditSubId)
   const visaTx = txs.filter(t => t.subCategoryName === 'مبيعات فيزا').reduce((s, t) => s + amt(t), 0) + dSum(d => d.subCategoryId === visaSubId) // v2.31.3: New
+  // v2.34.20 — مبيعات توصيل: خلية إرشادية فقط (تصنيف رئيسي «مبيعات» ← فرعي «مبيعات توصيل») — لا تدخل في totalSales ولا معادلة التقفيل
+  const deliverySales = txs.filter(t => t.subCategoryId === deliverySubId).reduce((s, t) => s + amt(t), 0) + dSum(d => d.subCategoryId === deliverySubId)
+  // v2.34.19 — عدد عمليات فيزا/آجل (إحصائي فقط، لنفس منطق عدد عمليات التوصيل — محفوظ + قيد الكتابة)
+  const visaOpsCount = txs.filter(t => t.subCategoryId === visaSubId).length
+    + drafts.filter(d => d.subCategoryId === visaSubId && d.description.trim() && d.amount).length
+  const creditOpsCount = txs.filter(t => t.subCategoryId === creditSubId).length
+    + drafts.filter(d => d.subCategoryId === creditSubId && d.description.trim() && d.amount).length
   // كاش أوت — تسليم > استلام ⇒ إضافة (مبيعات فيزا عبر الماكينة) · استلام > تسليم ⇒ خصم (تحويل رصيد لأساسي/إير تايم)
   const cashoutDiff = fawryRes?.cashoutSales ?? 0
   // v2.34.5 — معادلة "عمولة فوري (كاش أوت)" مؤكَّدة من الشيت المرجعي الأصلي (قالب فادي حورس):
@@ -313,8 +370,6 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const totalSales = shift.posSales + fawryWithCommission
   const totalExpenses = creditTx + visaTx + cashierExpenses
   const { result: netCash } = calcShiftClosing({ posSales: shift.posSales, cashierRemaining: shift.cashierRemaining, cashierExpenses, collections })
-  const statusLabel = netCash > 0 ? 'أوفر' : netCash < 0 ? 'عجز' : 'مطابق'
-  const statusColor = netCash > 0 ? G.edit : netCash < 0 ? G.warn : 'var(--txt-2)'
 
   return (
     <div className="flex flex-col h-full" style={{ color: 'var(--txt-1)' }}>
@@ -358,22 +413,26 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
           <div className="flex-1 overflow-auto min-h-0">
             <table className="w-full" style={{ tableLayout: 'fixed', fontSize: 13 }}>
               <colgroup>
-                <col style={{ width: 30 }} /><col style={{ width: 92 }} /><col /><col style={{ width: 108 }} /><col style={{ width: 116 }} />
-                <col style={{ width: 96 }} /><col style={{ width: 110 }} /><col style={{ width: 96 }} /><col style={{ width: 44 }} />
+                {/* v2.34.21 — البيان أُنقِص عرضه 10% (من عرضه الحر السابق) وأُضيف نفس المقدار لعرض تصنيف فرعي — إجمالي عرض الجدول ثابت 100% كما كان */}
+                <col style={{ width: 30 }} /><col style={{ width: 92 }} /><col style={{ width: 'calc((100% - 692px) * 0.9)' }} /><col style={{ width: 108 }} />
+                {/* v2.34.24 — تصنيف فرعي أُنقِص 5% (من عرضه الحالي) وأُضيف نفس المقدار لعرض الموظف */}
+                <col style={{ width: 'calc((116px + (100% - 692px) * 0.1) * 0.95)' }} />
+                {/* v2.34.25 — الدفع اتّسع 2% إضافية (ناحية اليسار، على حساب عرض الموظف المجاور) */}
+                <col style={{ width: 92.31 }} /><col style={{ width: 'calc(113.69px + (116px + (100% - 692px) * 0.1) * 0.05)' }} /><col style={{ width: 96 }} /><col style={{ width: 44 }} />
               </colgroup>
               <thead className="sticky top-0 z-10"><tr style={{ background: 'var(--app-bg-solid)', color: 'var(--txt-3)' }}>
                 <th className="th">#</th><th className="th">القيمة</th><th className="th">البيان</th><th className="th">الفئة</th><th className="th">تصنيف فرعي</th>
-                <th className="th">الدفع</th><th className="th">الموظف</th><th className="th text-center">النوع</th><th className="th"></th>
+                <th className="th" style={{ background: 'rgba(20,184,166,0.16)', color: PAY_COL }}>الدفع</th><th className="th">الموظف</th><th className="th text-center">النوع</th><th className="th"></th>
               </tr></thead>
               <tbody>
                 {txs.map((t, i) => editId === t.id ? (
                   <tr key={t.id} style={{ background: 'rgba(59,130,246,0.06)' }}>
                     <td className="td-lg" style={{ color: 'var(--txt-3)' }}>{i + 1}</td>
-                    <td className="td-lg"><input value={draft.amount} onChange={e => setDraft({ ...draft, amount: e.target.value })} className="w-full tabular-nums" style={inp} /></td>
+                    <td className="td-lg"><AmountCell value={draft.amount} onValueChange={v => setDraft({ ...draft, amount: v })} className="w-full tabular-nums" style={inp} /></td>
                     <td className="td-lg"><input value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} className="w-full" style={inp} /></td>
                     <td className="td-lg"><select value={draft.mainCategoryId} onChange={e => setDraft({ ...draft, mainCategoryId: Number(e.target.value), subCategoryId: 0 })} className="w-full" style={inp}><option value={0}>—</option>{mains.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
                     <td className="td-lg"><select value={draft.subCategoryId} onChange={e => setDraft({ ...draft, subCategoryId: Number(e.target.value) })} className="w-full" style={inp}><option value={0}>—</option>{subs.filter(s => s.mainCategoryId === draft.mainCategoryId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
-                    <td className="td-lg"><select value={draft.payMethod} onChange={e => setDraft({ ...draft, payMethod: e.target.value as PayMethod })} className="w-full" style={inp}>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
+                    <td className="td-lg"><select value={draft.payMethod} onChange={e => setDraft({ ...draft, payMethod: e.target.value as PayMethod | '' })} className="w-full" style={payInp}><option value="">لا شيء</option>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
                     <td className="td-lg">
                       {isAdvanceRow(draft.mainCategoryId, draft.subCategoryId)
                         ? <select value={draft.employeeId} onChange={e => setDraft({ ...draft, employeeId: Number(e.target.value) })} className="w-full" style={inp}><option value={0}>—</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
@@ -389,7 +448,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
                     <td className="td-lg font-medium truncate">{t.description}</td>
                     <td className="td-lg text-2xs truncate" style={{ color: 'var(--txt-2)' }}>{t.mainCategoryName}</td>
                     <td className="td-lg text-2xs truncate" style={{ color: 'var(--txt-2)' }}>{t.subCategoryName || '—'}</td>
-                    <td className="td-lg truncate" style={{ color: 'var(--txt-2)' }}>{PAY[t.payMethod]}</td>
+                    <td className="td-lg truncate" style={{ color: PAY_COL, fontWeight: 700 }}>{PAY[t.payMethod]}</td>
                     <td className="td-lg truncate" style={{ color: 'var(--txt-2)' }}>
                       {isAdvanceRow(t.mainCategoryId ?? 0, t.subCategoryId ?? 0)
                         ? (employees.find(e => e.id === t.employeeId)?.name ?? '—')
@@ -402,11 +461,11 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
                 {drafts.map((d, i) => (
                   <tr key={'d' + i} style={{ background: 'rgba(34,197,94,0.025)' }}>
                     <td className="td-lg" style={{ color: 'var(--txt-3)' }}>{txs.length + i + 1}</td>
-                    <td className="td-lg"><input data-cell={`${i}-0`} onKeyDown={e => onCellKey(e, i, 0)} value={d.amount} onChange={e => setDraftRow(i, { amount: e.target.value })} className="w-full tabular-nums sheet-cell" style={inp} /></td>
-                    <td className="td-lg"><input data-cell={`${i}-1`} onKeyDown={e => onCellKey(e, i, 1)} value={d.description} onChange={e => handleDescInput(i, e.target.value)} className="w-full sheet-cell" style={inp} /></td>
+                    <td className="td-lg"><AmountCell data-cell={`${i}-0`} onKeyDown={e => onCellKey(e, i, 0)} onPaste={e => handleColumnPaste(i, 'amount', e)} value={d.amount} onValueChange={v => setDraftRow(i, { amount: v })} className="w-full tabular-nums sheet-cell" style={inp} /></td>
+                    <td className="td-lg"><input data-cell={`${i}-1`} onKeyDown={e => onCellKey(e, i, 1)} onPaste={e => handleColumnPaste(i, 'description', e)} value={d.description} onChange={e => handleDescInput(i, e.target.value)} className="w-full sheet-cell" style={inp} /></td>
                     <td className="td-lg"><select data-cell={`${i}-2`} onKeyDown={e => onCellKey(e, i, 2)} value={d.mainCategoryId} onChange={e => setDraftRow(i, { mainCategoryId: Number(e.target.value), subCategoryId: 0 })} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{mains.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></td>
                     <td className="td-lg"><select data-cell={`${i}-3`} onKeyDown={e => onCellKey(e, i, 3)} value={d.subCategoryId} onChange={e => setDraftRow(i, { subCategoryId: Number(e.target.value) })} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{subs.filter(s => s.mainCategoryId === d.mainCategoryId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></td>
-                    <td className="td-lg"><select data-cell={`${i}-4`} onKeyDown={e => onCellKey(e, i, 4)} value={d.payMethod} onChange={e => setDraftRow(i, { payMethod: e.target.value as PayMethod })} className="w-full sheet-cell" style={inp}>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
+                    <td className="td-lg"><select data-cell={`${i}-4`} onKeyDown={e => onCellKey(e, i, 4)} value={d.payMethod} onChange={e => setDraftRow(i, { payMethod: e.target.value as PayMethod | '' })} className="w-full sheet-cell" style={payInp}><option value="">لا شيء</option>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
                     <td className="td-lg">
                       {isAdvanceRow(d.mainCategoryId, d.subCategoryId)
                         ? <select value={d.employeeId} onChange={e => setDraftRow(i, { employeeId: Number(e.target.value) })} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
@@ -463,9 +522,10 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
               <FCalc label="قيمة عمولة فوري (كاش أوت)" value={cashoutFawryCommission} accent={cashoutAccent} box />
             </tbody></table>
           </div>
-          {/* عدّاد عمولة فوري — أسفل جدول الماكينة، بمحاذاة عدّاد حالة الشيفت في العمود المجاور */}
-          <div className="px-2 pb-2 pt-1 flex-shrink-0">
-            <FawryCommissionGauge pct={cashoutCommissionPct} isDiscount={cashoutDiff < 0} />
+          {/* عدّاد عمولة فوري + عدّاد عدد عمليات التوصيل — جنبًا إلى جنب، بمحاذاة عمود ملخّص الشيفت المجاور */}
+          <div className="px-2 pb-2 pt-1 flex-shrink-0 flex items-center gap-1.5">
+            <div style={{ flex: 1, minWidth: 0 }}><FawryCommissionGauge pct={cashoutCommissionPct} isDiscount={cashoutDiff < 0} small /></div>
+            <div style={{ flex: 1, minWidth: 0 }}><CountGauge title="عدد عمليات التوصيل" count={deliveryOpsCount} color="#38bdf8" small /></div>
           </div>
         </div>
 
@@ -479,6 +539,8 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
               <CCard label="م فوري + الربحية" value={fmt(fawryWithCommission)} />
               <CCard label="مبيعات آجل" value={fmt(creditTx)} />
               <CCard label="مبيعات فيزا" value={fmt(visaTx)} />
+              {/* v2.34.20 — إرشادية فقط، غير داخلة في اجمالي المبيعات أدناه ولا في معادلة التقفيل */}
+              <CCard label="مبيعات توصيل" value={fmt(deliverySales)} accent="#38bdf8" />
               <CCard label="اجمالي المبيعات" value={fmt(totalSales)} accent="#d4a017" />
             </SummaryGroup>
 
@@ -503,10 +565,21 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
               <FundRow label="وارد إلى الصندوق" value={shift.cashierRemaining} />
               <FundRow label="رصيد آخر الصندوق" value={fundPos ? fundPos.before + shift.cashierRemaining - mgmtOut : 0} accent={G.sum} bold />
             </SummaryGroup>
+
+            {/* v2.34.17/19 — أول/آخر بون (يدوي) + إحصائيات عدد عمليات البيع (فيزا/آجل/توصيل) — إحصائي فقط، لا يدخل في أي حساب */}
+            <SummaryGroup title="📊 إحصائيات عمليات البيع" color="#38bdf8">
+              <StatRow label="✎ أول بون" value={fawry?.firstVoucher ?? 0} onSave={v => saveVoucher('firstVoucher', v)} editable />
+              <StatRow label="✎ آخر بون" value={fawry?.lastVoucher ?? 0} onSave={v => saveVoucher('lastVoucher', v)} editable />
+              <StatRow label="عدد عمليات البيع" value={saleOpsCount} />
+              <StatRow label="عدد عمليات فيزا" value={visaOpsCount} />
+              <StatRow label="عدد عمليات البيع الآجل" value={creditOpsCount} />
+              <StatRow label="عدد عمليات التوصيل" value={deliveryOpsCount} />
+            </SummaryGroup>
           </div>
-          {/* عدّاد حالة الشيفت — ثابت أسفل العمود، بمحاذاة عدّاد عمولة فوري أسفل العمود المجاور */}
-          <div className="px-2 pb-2 pt-1 flex-shrink-0">
-            <ShiftGauge result={netCash} />
+          {/* عدّاد حالة الشيفت + عدّاد عدد عمليات البيع — جنبًا إلى جنب، مصغّرين ليتسعا معًا بلا أي تغيير في أبعاد العمود الخارجي */}
+          <div className="px-2 pb-2 pt-1 flex-shrink-0 flex items-center gap-1.5">
+            <div style={{ flex: 1, minWidth: 0 }}><ShiftGauge result={netCash} small /></div>
+            <div style={{ flex: 1, minWidth: 0 }}><CountGauge title="عدد عمليات البيع" count={saleOpsCount} color="#38bdf8" small /></div>
           </div>
         </div>
 
@@ -554,16 +627,17 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
             <div className="flex items-center gap-1.5 mb-2 pb-1.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
               <span style={{ fontSize: 12.5, fontWeight: 700, color: 'var(--txt-1)' }}>🖩 آلة حاسبة</span>
             </div>
-            <div className="rounded-xl px-3 py-3 mb-2 text-left" style={{ background: 'rgba(0,0,0,0.18)', minHeight: 60 }}>
+            <div dir="ltr" className="rounded-xl px-3 py-3 mb-2 text-left" style={{ background: 'rgba(0,0,0,0.18)', minHeight: 60 }}>
               <div className="tabular-nums truncate" style={{ fontSize: 13, color: 'var(--txt-3)', minHeight: 16 }}>{calcExpr || '0'}</div>
               <div className="tabular-nums font-extrabold truncate" style={{ fontSize: 22, color: calcResult === 'خطأ' ? '#ef4444' : 'var(--txt-1)' }}>{calcResult ?? ''}</div>
             </div>
-            <div className="grid grid-cols-4 gap-1.5">
-              <button onClick={() => pressCalc('C')} className="calc-btn" style={{ color: '#ef4444' }}>C</button>
+            {/* v2.34.27 — dir="ltr" ثابت لمنع انعكاس الشبكة داخل التطبيق العربي (RTL)؛ "C" نُقل لصف مستقل بدل إقحامه أول الصف الأول (كان يزيح كل صف خانة واحدة فيخلط الأرقام بالعمليات) */}
+            <div dir="ltr" className="grid grid-cols-4 gap-1.5">
               {CALC_KEYS[0].map(k => <button key={k} onClick={() => pressCalc(k)} className="calc-btn">{k}</button>)}
               {CALC_KEYS[1].map(k => <button key={k} onClick={() => pressCalc(k)} className="calc-btn">{k}</button>)}
               {CALC_KEYS[2].map(k => <button key={k} onClick={() => pressCalc(k)} className="calc-btn">{k}</button>)}
               {CALC_KEYS[3].map(k => <button key={k} onClick={() => pressCalc(k)} className="calc-btn">{k}</button>)}
+              <button onClick={() => pressCalc('C')} className="calc-btn col-span-4" style={{ color: '#ef4444' }}>C</button>
               <button onClick={() => pressCalc('=')} className="calc-btn col-span-4" style={{ background: '#14b8a6', color: '#fff' }}>=</button>
             </div>
             <style>{`
@@ -589,7 +663,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
         <TBtn onClick={dupLast} icon="📋" label="تكرار" />
         <div className="w-px h-6 mx-1" style={{ background: 'var(--inner-border)' }} />
         <TBtn onClick={() => toast.show('من القائمة: استيراد اليومية', 'info')} icon="📥" label="استيراد" />
-        <TBtn onClick={() => toast.show('التصدير قريباً', 'info')} icon="📤" label="تصدير" />
+        <TBtn onClick={exportPDF} disabled={pdfBusy} icon="📤" label={pdfBusy ? 'جاري التصدير...' : 'تصدير PDF'} />
         <TBtn onClick={() => window.print()} icon="🖨" label="طباعة" />
         {user?.role === 'manager' && (
           <TBtn onClick={() => openWindow('categories', 'إدارة التصنيفات')} icon="🏷" label="إدارة التصنيفات" />
@@ -632,10 +706,29 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
 
 // خلايا الإدخال — خلفية خضراء خفيفة وحدّ أخضر (دلالة «قابل للتحرير») تعمل في الوضعين
 const inp: React.CSSProperties = { background: 'rgba(34,197,94,0.07)', color: 'var(--txt-1)', border: '1px solid rgba(34,197,94,0.35)', borderRadius: 6, fontSize: 13, padding: '3px 5px', outline: 'none' }
+// v2.34.25 — لون تركواز مميّز لعمود "الدفع" بالكامل (ترويسة + خلايا) لتمييزه عن باقي أعمدة الجدول
+const PAY_COL = '#14b8a6'
+const payInp: React.CSSProperties = { ...inp, background: 'rgba(20,184,166,0.10)', border: `1px solid ${PAY_COL}66`, color: PAY_COL }
+
+// v2.34.23 — تنسيق فاصلة الآلاف لعرض خلية "القيمة" أثناء عدم التركيز؛ الرقم الخام (بلا فواصل) يظهر فقط أثناء التحرير المباشر
+function formatAmountDisplay(raw: string): string {
+  if (!raw.trim()) return raw
+  const n = parseFloat(raw.replace(/,/g, ''))
+  return isNaN(n) ? raw : n.toLocaleString('en-US', { maximumFractionDigits: 2 })
+}
+function AmountCell({ value, onValueChange, onFocus, onBlur, ...rest }: {
+  value: string; onValueChange: (v: string) => void
+} & Omit<React.InputHTMLAttributes<HTMLInputElement>, 'value' | 'onChange'>) {
+  const [focused, setFocused] = useState(false)
+  return <input {...rest} value={focused ? value : formatAmountDisplay(value)}
+    onFocus={e => { setFocused(true); onFocus?.(e) }}
+    onBlur={e => { setFocused(false); onBlur?.(e) }}
+    onChange={e => onValueChange(e.target.value)} />
+}
 
 /** عدّاد نصف دائري مشترك — خمس شرائح لونية وإبرة تتحرك حسب النسبة؛ يُستخدم لعدّاد الشيفت وعدّاد عمولة فوري بنفس التصميم */
-function Gauge({ title, angle, color, statusText, valueText, segColors }: {
-  title: string; angle: number; color: string; statusText: string; valueText: string; segColors: [string, string, string, string, string]
+function Gauge({ title, angle, color, statusText, valueText, segColors, small }: {
+  title: string; angle: number; color: string; statusText: string; valueText: string; segColors: [string, string, string, string, string]; small?: boolean
 }) {
   const segPaths = [
     'M 22 100 A 78 78 0 0 1 35.3 56.4',
@@ -645,9 +738,9 @@ function Gauge({ title, angle, color, statusText, valueText, segColors }: {
     'M 163.1 54.1 A 78 78 0 0 1 178.0 97.3',
   ]
   return (
-    <div className="rounded-xl px-2.5 pt-2 pb-1.5 flex-shrink-0 flex flex-col items-center justify-center" style={{ minHeight: 108, background: 'var(--surface-2, rgba(255,255,255,0.04))', border: '1px solid var(--inner-border)' }}>
+    <div className="rounded-xl px-2.5 pt-2 pb-1.5 flex-shrink-0 flex flex-col items-center justify-center" style={{ minHeight: small ? 92 : 108, background: 'var(--surface-2, rgba(255,255,255,0.04))', border: '1px solid var(--inner-border)' }}>
       <div className="text-2xs font-bold mb-0.5 self-start" style={{ color: 'var(--txt-2)' }}>{title}</div>
-      <svg viewBox="0 0 200 118" style={{ width: '100%', maxWidth: 150 }}>
+      <svg viewBox="0 0 200 118" style={{ width: '100%', maxWidth: small ? 100 : 150 }}>
         {segPaths.map((d, i) => <path key={i} d={d} fill="none" stroke={segColors[i]} strokeWidth={11} strokeLinecap="round" opacity={0.92} />)}
         <g transform={`rotate(${angle} 100 100)`} style={{ transition: 'transform 0.6s cubic-bezier(0.34,1.56,0.64,1)' }}>
           <line x1="100" y1="100" x2="100" y2="38" stroke="var(--txt-1)" strokeWidth="3" strokeLinecap="round" />
@@ -655,32 +748,41 @@ function Gauge({ title, angle, color, statusText, valueText, segColors }: {
         <circle cx="100" cy="100" r="6" fill="var(--txt-1)" />
         <circle cx="100" cy="100" r="2.5" fill={color} />
       </svg>
-      <div className="font-black" style={{ fontSize: 12.5, color, marginTop: -3 }}>{statusText}</div>
-      <div className="font-extrabold tabular-nums" style={{ fontSize: 14.5, color: 'var(--txt-1)' }}>{valueText}</div>
+      <div className="font-black" style={{ fontSize: small ? 11 : 12.5, color, marginTop: -3 }}>{statusText}</div>
+      <div className="font-extrabold tabular-nums" style={{ fontSize: small ? 12.5 : 14.5, color: 'var(--txt-1)' }}>{valueText}</div>
     </div>
   )
 }
 
 /** عدّاد حالة الشيفت — عجز/أوفر (أحمر→أخضر) */
-function ShiftGauge({ result }: { result: number }) {
+function ShiftGauge({ result, small }: { result: number; small?: boolean }) {
   const scale = Math.max(Math.abs(result) * 1.25, 100000)
   const ratio = Math.max(-1, Math.min(1, result / scale)) // -1 to 1
   const angle = ratio * 80 // -80deg to 80deg
   const label = result > 0 ? 'أوفر' : result < 0 ? 'عجز' : 'متزن'
   const color = result > 0 ? '#22c55e' : result < 0 ? '#f87171' : '#fbbf24'
   return <Gauge title="حالة الشيفت 🔒" angle={angle} color={color} statusText={label} valueText={fmt(Math.abs(result))}
-    segColors={['#ef4444', '#f97316', '#fbbf24', '#84cc16', '#22c55e']} />
+    segColors={['#ef4444', '#f97316', '#fbbf24', '#84cc16', '#22c55e']} small={small} />
 }
 
 /** عدّاد نسبة عمولة فوري المخصومة من رصيد الكاش أوت — بنفس تصميم عدّاد الشيفت وبلون مميّز مختلف (أحمر→وردي→بنفسجي→أزرق→أخضر) */
-function FawryCommissionGauge({ pct, isDiscount }: { pct: number; isDiscount: boolean }) {
+function FawryCommissionGauge({ pct, isDiscount, small }: { pct: number; isDiscount: boolean; small?: boolean }) {
   const scale = Math.max(Math.abs(pct) * 1.25, 3)
   const ratio = Math.max(-1, Math.min(1, pct / scale))
   const angle = ratio * 80
   const color = isDiscount ? '#f87171' : '#22c55e'
   const label = isDiscount ? 'خصم' : 'إضافة'
   return <Gauge title="عمولة فوري (كاش أوت) 🔒" angle={angle} color={color} statusText={label} valueText={`${pct.toFixed(1)}%`}
-    segColors={['#ef4444', '#ec4899', '#a855f7', '#3b82f6', '#22c55e']} />
+    segColors={['#ef4444', '#ec4899', '#a855f7', '#3b82f6', '#22c55e']} small={small} />
+}
+
+/** عدّاد إحصائي محايد لعرض عدد عمليات (بيع/توصيل) — لا يدخل في أي حساب، مجرّد عرض بصري لعدد صحيح */
+function CountGauge({ title, count, color, small }: { title: string; count: number; color: string; small?: boolean }) {
+  const scale = Math.max(count * 1.25, 10)
+  const ratio = Math.max(0, Math.min(1, count / scale))
+  const angle = ratio * 160 - 80
+  return <Gauge title={title} angle={angle} color={color} statusText="عملية" valueText={count.toLocaleString('en-US')}
+    segColors={['#bae6fd', '#7dd3fc', '#38bdf8', '#0ea5e9', '#0284c7']} small={small} />
 }
 
 const Sep = () => <span style={{ color: 'var(--txt-3)', opacity: 0.5 }}>|</span>
@@ -732,6 +834,22 @@ function FundRow({ label, value, onSave, editable, accent, bold }: { label: stri
           background: SUMMARY_BOX_BG, border: SUMMARY_BOX_BORDER,
           borderRadius: 6, padding: '3px 7px', width: SUMMARY_BOX_W,
         }}>{fmt0(value)}</span>}
+  </div>
+}
+// v2.34.17 — نسخة بلا أي ضرب/قسمة ×100 من FundRow، لأرقام صحيحة إحصائية (أرقام بون، عدد عمليات) وليست مبالغ مالية
+function StatRow({ label, value, onSave, editable, accent }: { label: string; value: number; onSave?: (v: string) => void; editable?: boolean; accent?: string }) {
+  const [v, setV] = useState('')
+  useEffect(() => { if (editable) setV(value ? String(value) : '') }, [value, editable])
+  const c = accent ?? (editable ? '#4ade80' : 'var(--txt-1)')
+  return <div className="flex items-center justify-between py-1" style={{ fontSize: 12 }}>
+    <span className="font-medium" style={{ color: editable ? '#4ade80' : 'var(--txt-2)' }}>{label}</span>
+    {editable && onSave
+      ? <input value={v} onChange={e => setV(e.target.value)} onBlur={() => onSave(v)} className="text-left tabular-nums font-bold" style={{ ...inp, fontSize: 12, padding: '2px 5px', width: SUMMARY_BOX_W }} />
+      : <span className="inline-block text-left tabular-nums" style={{
+          fontWeight: 700, fontSize: 12.5, color: c,
+          background: SUMMARY_BOX_BG, border: SUMMARY_BOX_BORDER,
+          borderRadius: 6, padding: '3px 7px', width: SUMMARY_BOX_W,
+        }}>{value.toLocaleString('en-US')}</span>}
   </div>
 }
 function FIn({ label, value, onSave, raw, suffix }: { label: string; value: number; onSave: (v: string) => void; raw?: boolean; suffix?: string }) {
@@ -791,10 +909,10 @@ function CCardIn({ label, value, onSave, accent }: { label: string; value: numbe
       onBlur={() => { setFocused(false); onSave(v) }} className="tabular-nums font-extrabold text-left" style={{ ...inp, fontSize: 13, fontWeight: 800, padding: '3px 7px', width: SUMMARY_BOX_W }} />
   </div>
 }
-function TBtn({ onClick, icon, label, primary, success, danger }: { onClick: () => void; icon: string; label: string; primary?: boolean; success?: boolean; danger?: boolean }) {
+function TBtn({ onClick, icon, label, primary, success, danger, disabled }: { onClick: () => void; icon: string; label: string; primary?: boolean; success?: boolean; danger?: boolean; disabled?: boolean }) {
   const st: React.CSSProperties = primary ? { background: 'rgba(34,197,94,0.16)', color: '#22c55e' }
     : success ? { background: 'linear-gradient(90deg,#16a34a,#22c55e)', color: '#fff' }
     : danger ? { color: '#f87171', border: '1px solid rgba(248,113,113,0.35)' }
     : { color: 'var(--txt-1)', border: '1px solid var(--inner-border)' }
-  return <button onClick={onClick} className="text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5" style={st}><span>{icon}</span>{label}</button>
+  return <button onClick={onClick} disabled={disabled} className="text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5" style={{ ...st, opacity: disabled ? 0.6 : 1, cursor: disabled ? 'default' : 'pointer' }}><span>{icon}</span>{label}</button>
 }

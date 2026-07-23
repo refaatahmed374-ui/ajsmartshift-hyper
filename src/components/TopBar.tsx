@@ -32,7 +32,7 @@ const MoonIcon = ({ size = 16 }) => (
   </svg>
 )
 
-export default function TopBar({ page }: Props) {
+export default function TopBar({ page: _page }: Props) {
   const { user, logout } = useAuth()
   const { activeShift } = useShift()
   const { theme, toggle } = useTheme()
