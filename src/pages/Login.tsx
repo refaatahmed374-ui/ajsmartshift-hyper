@@ -140,7 +140,6 @@ export default function Login() {
             <div className="mb-3" style={{ fontSize: '12px', fontWeight: 700, color: '#a5b4fc', letterSpacing: '0.03em' }}>{t.subInfo}</div>
             {[
               [t.client,    t.devName,                  '#34d399'],
-              [t.subStart,  status?.trialStart ?? '—',  '#ffffff'],
               [t.subEnd,    status?.trialEnd ?? '—',     '#ffffff'],
               [t.deviceCode, status?.deviceCode ?? '—', GOLD],
             ].map(([k, v, c], i) => (

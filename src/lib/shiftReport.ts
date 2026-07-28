@@ -16,11 +16,14 @@ const PAY_LABELS: Record<string, string> = {
 
 export async function generateShiftReportPDF(s: Shift): Promise<void> {
   // جلب البيانات
-  const [txs, fawry, custody, settings] = await Promise.all([
+  const [txs, fawry, custody, settings, fundPos] = await Promise.all([
     call(api.tx.getByShift(s.id))                  as Promise<Transaction[]>,
     call(api.fawry.get(s.id)).catch(() => null)    as Promise<ShiftFawry | null>,
     call(api.custody.get(s.id)).catch(() => null)  as Promise<ShiftCustody | null>,
     call(api.settings.getAll()).catch(() => [])    as Promise<{ key: string; value: string }[]>,
+    // إصلاح: كانت "رصيد أول الصندوق" تُقرأ من shift.openingBalance (حقل شبه ميت، يظل 0 دومًا) بدل رصيد
+    // الخزينة الفعلي المرحَّل من الشيفتات السابقة — نفس المصدر المستخدَم في شاشة اليومية الحيّة (ShiftSheet)
+    call(api.treasury.shiftPosition(s.id)).catch(() => null) as Promise<{ before: number; cashIn: number; mgmtOut: number; after: number } | null>,
   ])
   const getSetting = (k: string) => settings.find(x => x.key === k)?.value ?? ''
   const companyLogo = getSetting('biz.logo')
@@ -38,10 +41,10 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
   const resultLabel = status === 'surplus' ? 'أوفر' : status === 'deficit' ? 'عجز' : 'مطابق'
 
   // حركة الصندوق (4 خلايا): رصيد أول + مضاف − منصرف = متبقي
-  const boxOpening   = s.openingBalance ?? 0
-  const boxAdded     = s.cashierRemaining ?? 0
-  const boxSpent     = mgmtOut
-  const boxRemaining = boxOpening + boxAdded - boxSpent
+  const boxOpening   = fundPos?.before ?? 0
+  const boxAdded     = fundPos?.cashIn ?? (s.cashierRemaining ?? 0)
+  const boxSpent     = fundPos?.mgmtOut ?? mgmtOut
+  const boxRemaining = fundPos ? fundPos.after : boxOpening + boxAdded - boxSpent
   const boxRemColor  = boxRemaining >= 0 ? '#10b981' : '#ef4444'
 
   const payDist = (['cashier', 'management'] as const).map(pm => {
@@ -169,7 +172,7 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
             { label: 'رصيد أول الصندوق', value: boxOpening,   color: '#1e3a8a' },
             { label: 'مضاف',            value: boxAdded,     color: '#10b981' },
             { label: 'منصرف',           value: boxSpent,     color: '#ef4444' },
-            { label: 'متبقي',           value: boxRemaining, color: boxRemColor },
+            { label: 'رصيد آخر الصندوق', value: boxRemaining, color: boxRemColor },
           ].map(c => `
             <div style="flex: 1; border: 1.5px solid ${c.color}44; border-radius: 12px;
               padding: 12px 10px; text-align: center; background: ${c.color}0c;">
@@ -181,7 +184,7 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
           `).join('')}
         </div>
         <div style="margin-top: 6px; font-size: 10.5px; color: #94a3b8; text-align: center;">
-          المتبقي = رصيد أول الصندوق + المضاف − المنصرف
+          رصيد آخر الصندوق = رصيد أول الصندوق + المضاف − المنصرف
         </div>
       </div>
 
@@ -212,7 +215,7 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
           </tbody>
         </table>
         <div style="margin-top: 8px; font-size: 11px; color: #64748b;">
-          مبيعات البرنامج: <b style="color: #10b981;">${fmt(fawry.programSales)} ج</b>
+          مبيعات فوري + الربحية: <b style="color: #10b981;">${fmt(fawry.fawryTotalManual || fawry.programSales)} ج</b>
           &nbsp;·&nbsp; أول بون: <b>${fawry.firstVoucher}</b>
           &nbsp;·&nbsp; آخر بون: <b>${fawry.lastVoucher}</b>
         </div>
@@ -227,7 +230,6 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
             <th style="padding: 7px 8px; text-align: center; border: 1px solid #06b6d4;">عدد البنود</th>
             <th style="padding: 7px 8px; text-align: center; border: 1px solid #06b6d4;">وارد</th>
             <th style="padding: 7px 8px; text-align: center; border: 1px solid #06b6d4;">منصرف</th>
-            <th style="padding: 7px 8px; text-align: center; border: 1px solid #06b6d4;">صافي</th>
           </tr></thead>
           <tbody>
             ${payDist.map((p, i) => `
@@ -236,7 +238,6 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
                 <td style="padding: 6px 8px; text-align: center; border: 1px solid #e2e8f0;">${p.count}</td>
                 <td style="padding: 6px 8px; text-align: center; color: #10b981; border: 1px solid #e2e8f0;">${fmt(p.in)}</td>
                 <td style="padding: 6px 8px; text-align: center; color: #ef4444; border: 1px solid #e2e8f0;">${fmt(p.out)}</td>
-                <td style="padding: 6px 8px; text-align: center; font-weight: 700; border: 1px solid #e2e8f0; color: ${(p.in - p.out) >= 0 ? '#10b981' : '#ef4444'};">${fmt(p.in - p.out)}</td>
               </tr>
             `).join('')}
           </tbody>
@@ -246,26 +247,41 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
       <div style="margin-bottom: 18px;">
         <div style="font-size: 14px; font-weight: 800; color: #f59e0b; margin-bottom: 8px;
           border-bottom: 2px solid #f59e0b33; padding-bottom: 6px;">🔒 بيانات الإغلاق والعهدة</div>
-        <table style="width: 100%; font-size: 12px; border-collapse: collapse;">
-          <tr>
-            <td style="padding: 6px 8px; color: #64748b; width: 30%;">مبيعات POS</td>
-            <td style="padding: 6px 8px; font-weight: 700; color: #3b82f6;">${fmt(s.posSales ?? 0)} ج</td>
-            <td style="padding: 6px 8px; color: #64748b; width: 30%;">نقدية متبقية</td>
-            <td style="padding: 6px 8px; font-weight: 700; color: #10b981;">${fmt(s.cashierRemaining ?? 0)} ج</td>
-          </tr>
-          <tr style="background: #f8fafc;">
-            <td style="padding: 6px 8px; color: #64748b;">التحصيلات</td>
-            <td style="padding: 6px 8px; font-weight: 700;">${fmt(collections)} ج</td>
-            <td style="padding: 6px 8px; color: #64748b;">مصروفات الشيفت</td>
-            <td style="padding: 6px 8px; font-weight: 700; color: #ef4444;">${fmt(shiftExpenses)} ج</td>
-          </tr>
-          ${custody ? `
-          <tr>
-            <td style="padding: 6px 8px; color: #64748b;">إضافة من صندوق سابق</td>
-            <td style="padding: 6px 8px; font-weight: 700;">${fmt(custody.addFromFund)} ج</td>
-            <td style="padding: 6px 8px; color: #64748b;">إدارة محسوب</td>
-            <td style="padding: 6px 8px; font-weight: 700; color: #f59e0b;">${fmt(custody.managementPaid)} ج</td>
-          </tr>` : ''}
+        <table style="width: 100%; font-size: 12px; border-collapse: collapse; border: 1px solid #cbd5e1;">
+          <thead><tr style="background: #f59e0b; color: white;">
+            <th style="padding: 7px 8px; text-align: right; border: 1px solid #f59e0b;">البيان</th>
+            <th style="padding: 7px 8px; text-align: center; border: 1px solid #f59e0b;">القيمة</th>
+          </tr></thead>
+          <tbody>
+            ${([
+              ['مبيعات POS',       fmt(s.posSales ?? 0) + ' ج',   '#3b82f6'],
+              ['نقدية الكاشير',    fmt(s.cashierRemaining ?? 0) + ' ج', '#10b981'],
+              ['التحصيلات',        fmt(collections) + ' ج',       '#1a1a1a'],
+              ['مصروفات الكاشير',  fmt(shiftExpenses) + ' ج',     '#ef4444'],
+            ] as [string, string, string][]).map(([label, value, color], i) => `
+              <tr style="background: ${i % 2 === 0 ? '#f8fafc' : '#ffffff'};">
+                <td style="padding: 6px 8px; color: #64748b; border: 1px solid #e2e8f0;">${label}</td>
+                <td style="padding: 6px 8px; text-align: center; font-weight: 700; color: ${color}; border: 1px solid #e2e8f0;">${value}</td>
+              </tr>
+            `).join('')}
+            ${custody ? `
+              <tr>
+                <td style="padding: 6px 8px; color: #64748b; border: 1px solid #e2e8f0;">عهدة مستلمة</td>
+                <td style="padding: 6px 8px; text-align: center; font-weight: 700; border: 1px solid #e2e8f0;">${fmt(custody.addFromFund)} ج</td>
+              </tr>
+              <tr style="background: #f8fafc;">
+                <td style="padding: 6px 8px; color: #64748b; border: 1px solid #e2e8f0;">عهدة منصرفة</td>
+                <td style="padding: 6px 8px; text-align: center; font-weight: 700; color: #f59e0b; border: 1px solid #e2e8f0;">${fmt(custody.managementPaid)} ج</td>
+              </tr>
+              <tr style="background: #fef9c3;">
+                <td style="padding: 6px 8px; color: #64748b; border: 1px solid #e2e8f0;">عهدة متبقية</td>
+                <td style="padding: 6px 8px; text-align: center; font-weight: 800; color: #a16207; border: 1px solid #e2e8f0;">${fmt(custody.addFromFund - custody.managementPaid)} ج</td>
+              </tr>
+              <tr style="background: #dcfce7;">
+                <td style="padding: 6px 8px; color: #64748b; border: 1px solid #e2e8f0;">إجمالي المتبقي <span style="font-size:9.5px; color:#94a3b8;">(نقدية الكاشير + المتبقي من العهدة)</span></td>
+                <td style="padding: 6px 8px; text-align: center; font-weight: 800; color: #15803d; border: 1px solid #e2e8f0;">${fmt((s.cashierRemaining ?? 0) + (custody.addFromFund - custody.managementPaid))} ج</td>
+              </tr>` : ''}
+          </tbody>
         </table>
       </div>
 

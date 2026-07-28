@@ -47,7 +47,6 @@ CREATE TABLE IF NOT EXISTS shifts (
   status              TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','review','approved')),
   opening_balance     INTEGER NOT NULL DEFAULT 0,
   closing_balance     INTEGER,
-  actual_cash         INTEGER,
   note                TEXT NOT NULL DEFAULT '',
   created_by          INTEGER NOT NULL REFERENCES users(id),
   approved_by         INTEGER REFERENCES users(id),
@@ -135,7 +134,8 @@ CREATE TABLE IF NOT EXISTS shift_fawry (
   cashout_to_air    INTEGER NOT NULL DEFAULT 0,
   program_sales     INTEGER NOT NULL DEFAULT 0,
   first_voucher     INTEGER NOT NULL DEFAULT 0,
-  last_voucher      INTEGER NOT NULL DEFAULT 0
+  last_voucher      INTEGER NOT NULL DEFAULT 0,
+  fawry_total_manual INTEGER NOT NULL DEFAULT 0
 );
 
 -- ===== العهدة لكل شيفت =====
@@ -155,20 +155,6 @@ CREATE TABLE IF NOT EXISTS employee_attendance (
   check_out    TEXT,
   hours_worked INTEGER NOT NULL DEFAULT 0,
   UNIQUE(employee_id, shift_id)
-);
-
--- ===== سجل التعديلات =====
-CREATE TABLE IF NOT EXISTS audit_log (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id      INTEGER NOT NULL REFERENCES users(id),
-  user_name    TEXT NOT NULL,
-  entity_type  TEXT NOT NULL,
-  entity_id    INTEGER NOT NULL,
-  operation    TEXT NOT NULL,
-  value_before TEXT NOT NULL DEFAULT '',
-  value_after  TEXT NOT NULL DEFAULT '',
-  reason       TEXT NOT NULL DEFAULT '',
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ===== طابور المزامنة =====
@@ -194,5 +180,4 @@ CREATE INDEX IF NOT EXISTS idx_transactions_created  ON transactions(created_at)
 CREATE INDEX IF NOT EXISTS idx_shifts_date           ON shifts(date);
 CREATE INDEX IF NOT EXISTS idx_shifts_status         ON shifts(status);
 CREATE INDEX IF NOT EXISTS idx_smart_labels_pattern  ON smart_labels(pattern);
-CREATE INDEX IF NOT EXISTS idx_audit_log_entity      ON audit_log(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_attendance_employee   ON employee_attendance(employee_id);

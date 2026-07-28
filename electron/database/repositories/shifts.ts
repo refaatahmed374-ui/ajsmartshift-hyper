@@ -1,7 +1,8 @@
 import type Database from 'better-sqlite3'
 import type { Shift, ShiftFawry, ShiftCustody, Journal } from '../../../core/types'
-import { detectShiftType, calcMonthlyShiftNum } from '../../../core/engine'
+import { detectShiftType, calcMonthlyShiftNum, calcShiftClosing } from '../../../core/engine'
 import { assertMonthUnlocked } from './treasury'
+import { createNotification } from './notifications'
 
 // يحسم تاريخ الشيفت لأغراض حارس القفل الشهري، ويتحقق منه فورًا
 function assertShiftMonthUnlocked(db: Database.Database, shiftId: number): void {
@@ -45,9 +46,6 @@ function row2fawry(r: Record<string, unknown>): ShiftFawry {
     airDeliver:      r.air_deliver as number,
     cashoutReceive:  r.cashout_receive as number,
     cashoutDeliver:  r.cashout_deliver as number,
-    cashoutAdd:      (r.cashout_add as number) ?? 0,
-    cashoutDiscount: (r.cashout_discount as number) ?? 0,
-    commissionPct:   (r.commission_pct as number) ?? 0,
     fawryToBasic:    r.fawry_to_basic as number,
     fawryToAir:      r.fawry_to_air as number,
     cashoutToBasic:  r.cashout_to_basic as number,
@@ -55,6 +53,7 @@ function row2fawry(r: Record<string, unknown>): ShiftFawry {
     programSales:    r.program_sales as number,
     firstVoucher:    r.first_voucher as number,
     lastVoucher:     r.last_voucher as number,
+    fawryTotalManual: (r.fawry_total_manual as number) ?? 0,
   }
 }
 
@@ -177,6 +176,22 @@ export function closeShift(
       shift_expenses     = ?
     WHERE id = ?
   `).run(cashierRemaining, posSales, cashierRemaining, cashierCollections, shiftExpenses, shiftId)
+
+  // تنبيه تلقائي عند عجز/أوفر — المعادلة الرسمية الموحّدة (core/engine)
+  const { result, status } = calcShiftClosing({
+    posSales, cashierRemaining, cashierExpenses: shiftExpenses, collections: cashierCollections,
+  })
+  if (status !== 'balanced') {
+    const shiftInfo = db.prepare(`SELECT monthly_shift_num, cashier_name FROM shifts WHERE id = ?`)
+      .get(shiftId) as { monthly_shift_num: number; cashier_name: string }
+    const amountEgp = (Math.abs(result) / 100).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    createNotification(db, {
+      type: status,
+      title: status === 'deficit' ? 'عجز في شيفت' : 'أوفر في شيفت',
+      message: `شيفت #${shiftInfo.monthly_shift_num} (${shiftInfo.cashier_name}) — الفرق: ${amountEgp} ج`,
+      shiftId,
+    })
+  }
 }
 
 // ADR-012 v2 — تحرير بيانات الشيفت (التاريخ/النوع/اسم الكاشير) يدوياً
@@ -229,20 +244,11 @@ export function getFawry(db: Database.Database, shiftId: number): ShiftFawry | n
   return row ? row2fawry(row) : null
 }
 
-// ADR-012 v2 — قيم فوري اللازمة لمعادلة الإغلاق لكل شيفتات شهر (لسجل اليوميات)
-export function getFawryClosingMonth(db: Database.Database, month: string): { shiftId: number; programSales: number; commissionPct: number }[] {
-  return (db.prepare(`
-    SELECT f.shift_id AS shiftId, f.program_sales AS programSales, f.commission_pct AS commissionPct
-    FROM shift_fawry f JOIN shifts s ON s.id = f.shift_id
-    WHERE s.date LIKE ?
-  `).all(`${month}%`) as { shiftId: number; programSales: number; commissionPct: number }[])
-}
-
 // ADR-012 v2 — قيم فوري لكل الشيفتات (للوحة المعلومات التراكمية)
-export function getAllFawryClosing(db: Database.Database): { shiftId: number; programSales: number; commissionPct: number }[] {
+export function getAllFawryClosing(db: Database.Database): { shiftId: number; programSales: number; fawryTotalManual: number }[] {
   return (db.prepare(`
-    SELECT shift_id AS shiftId, program_sales AS programSales, commission_pct AS commissionPct FROM shift_fawry
-  `).all() as { shiftId: number; programSales: number; commissionPct: number }[])
+    SELECT shift_id AS shiftId, program_sales AS programSales, fawry_total_manual AS fawryTotalManual FROM shift_fawry
+  `).all() as { shiftId: number; programSales: number; fawryTotalManual: number }[])
 }
 
 export function updateFawry(
@@ -303,15 +309,6 @@ export function updateShiftNote(
 ): void {
   assertShiftMonthUnlocked(db, shiftId)
   db.prepare(`UPDATE shifts SET note=? WHERE id=?`).run(note, shiftId)
-}
-
-export function updateShiftOpeningBalance(
-  db: Database.Database,
-  shiftId: number,
-  openingBalance: number
-): void {
-  assertShiftMonthUnlocked(db, shiftId)
-  db.prepare(`UPDATE shifts SET opening_balance=? WHERE id=?`).run(openingBalance, shiftId)
 }
 
 export function deleteShift(

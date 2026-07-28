@@ -3,13 +3,12 @@ import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
 import { join, basename } from 'path'
 import ExcelJS from 'exceljs'
-import { existsSync, mkdirSync, copyFileSync } from 'fs'
+import { existsSync, mkdirSync } from 'fs'
 import { getDb, closeDb, wipeData } from './database/index'
 import * as UserRepo   from './database/repositories/users'
 import * as ShiftRepo  from './database/repositories/shifts'
 import * as TxRepo     from './database/repositories/transactions'
 import * as EmpRepo    from './database/repositories/employees'
-import * as AuditRepo  from './database/repositories/audit'
 import * as NotifRepo  from './database/repositories/notifications'
 import * as PermRepo   from './database/repositories/permissions'
 import * as LicenseRepo from './database/repositories/license'
@@ -158,7 +157,6 @@ handle('shifts:getAll',         (db, opts) => ShiftRepo.getShifts(db, opts as Pa
 handle('shifts:getActive',      (db)       => ShiftRepo.getActiveShift(db))
 handle('shifts:updateStatus',   (db, id, s, uid) => ShiftRepo.updateShiftStatus(db, id as number, s as 'open'|'review'|'approved', uid as number))
 handle('shifts:updateNote',     (db, id, note)   => ShiftRepo.updateShiftNote(db, id as number, note as string))
-handle('shifts:updateOpening',  (db, id, bal)    => ShiftRepo.updateShiftOpeningBalance(db, id as number, bal as number))
 handle('shifts:updateCloseInputs', (db, id, data) => ShiftRepo.updateShiftCloseInputs(db, id as number, data as Parameters<typeof ShiftRepo.updateShiftCloseInputs>[2]))
 handle('shifts:updateMeta',     (db, id, data) => ShiftRepo.updateShiftMeta(db, id as number, data as Parameters<typeof ShiftRepo.updateShiftMeta>[2]))
 handle('shifts:delete',         (db, id)         => ShiftRepo.deleteShift(db, id as number))
@@ -171,7 +169,6 @@ handle('shifts:close',          (db, id, cash, posSales, cashierRemaining) => {
 
 // ===== فوري =====
 handle('fawry:get',             (db, sid)  => ShiftRepo.getFawry(db, sid as number))
-handle('fawry:closingMonth',    (db, month) => ShiftRepo.getFawryClosingMonth(db, month as string))
 handle('fawry:allClosing',      (db)        => ShiftRepo.getAllFawryClosing(db))
 handle('fawry:update',          (db, sid, data) => ShiftRepo.updateFawry(db, sid as number, data as Parameters<typeof ShiftRepo.updateFawry>[2]))
 
@@ -210,14 +207,10 @@ handle('emp:create',            (db, data) => EmpRepo.createEmployee(db, data as
 handle('emp:update',            (db, id, data) => EmpRepo.updateEmployee(db, id as number, data as Parameters<typeof EmpRepo.updateEmployee>[2]))
 handle('emp:setAttendance',     (db, data) => EmpRepo.setAttendance(db, data as Parameters<typeof EmpRepo.setAttendance>[1]))
 handle('emp:setPenalty',        (db, empId, date, penaltyDays) => EmpRepo.setAttendancePenalty(db, empId as number, date as string, penaltyDays as number))
+handle('emp:setBonus',          (db, empId, date, bonusAmount) => EmpRepo.setAttendanceBonus(db, empId as number, date as string, bonusAmount as number))
 handle('emp:deleteAttendance',  (db, id)   => EmpRepo.deleteAttendance(db, id as number))
 handle('emp:getAttendanceMonth',(db, eid, month) => EmpRepo.getAttendanceMonth(db, eid as number, month as string))
 handle('emp:financials',        (db, month) => EmpRepo.getMonthlyFinancials(db, month as string))
-
-// ===== سجل التعديلات =====
-handle('audit:log',             (db, entry) => AuditRepo.logAudit(db, entry as Parameters<typeof AuditRepo.logAudit>[1]))
-handle('audit:get',             (db, opts)  => AuditRepo.getAuditLog(db, opts as Parameters<typeof AuditRepo.getAuditLog>[1]))
-handle('audit:count',           (db, opts)  => AuditRepo.getAuditCount(db, opts as Parameters<typeof AuditRepo.getAuditCount>[1]))
 
 // ===== التحديثات التلقائية =====
 autoUpdater.autoDownload = false   // لا ننزّل تلقائياً — ننتظر موافقة المستخدم
@@ -238,9 +231,8 @@ ipcMain.handle('update:install',  () => { autoUpdater.quitAndInstall(); return o
 ipcMain.handle('update:current',  () => ok({ version: app.getVersion() }))
 ipcMain.handle('update:pending',  () => ok(updateInfo))
 
-// ===== الترخيص =====
+// ===== الترخيص (Server Authoritative — لا تفعيل بمفتاح محلي بعد الآن) =====
 ipcMain.handle('license:status',   () => { try { return ok(LicenseRepo.getLicenseStatus()) } catch (e) { return err((e as Error).message) } })
-ipcMain.handle('license:activate', (_e, key) => { try { return ok(LicenseRepo.activateLicense(key as string)) } catch (e) { return err((e as Error).message) } })
 ipcMain.handle('license:refresh',  async () => { try { return ok(await LicenseRepo.refreshLicenseOnline()) } catch (e) { return err((e as Error).message) } })
 ipcMain.handle('license:requestActivation', async (_e, opts) => { try { return ok(await LicenseRepo.submitActivationRequest(opts ?? {})) } catch (e) { return err((e as Error).message) } })
 
@@ -248,7 +240,6 @@ ipcMain.handle('license:requestActivation', async (_e, opts) => { try { return o
 handle('perms:getUser',    (db, uid)         => PermRepo.getUserPermissions(db, uid as number))
 handle('perms:getAll',     (db)              => PermRepo.getAllUsersPermissions(db))
 handle('perms:set',        (db, uid, perm, granted) => PermRepo.setPermission(db, uid as number, perm as import('../core/types').Permission, granted as boolean))
-handle('perms:init',       (db, uid, role)   => PermRepo.initDefaultPermissions(db, uid as number, role as import('../core/types').Role))
 
 // ===== التنبيهات =====
 handle('notif:create',     (db, data)  => NotifRepo.createNotification(db, data as Parameters<typeof NotifRepo.createNotification>[1]))
@@ -271,14 +262,12 @@ handle('treasury:shiftPosition', (db, shiftId) => TreasuryRepo.getShiftTreasuryP
 handle('payroll:save',          (db, data) => TreasuryRepo.savePayrollReport(db, data as Parameters<typeof TreasuryRepo.savePayrollReport>[1]))
 handle('payroll:list',          (db)       => TreasuryRepo.listPayrollReports(db))
 handle('payroll:delete',        (db, id)   => TreasuryRepo.deletePayrollReport(db, id as number))
-handle('monthlyClose:save',     (db, month, dataJson) => TreasuryRepo.saveMonthlyClose(db, month as string, dataJson as string))
 handle('monthlyClose:list',     (db)       => TreasuryRepo.listMonthlyCloses(db))
 handle('monthlyClose:get',      (db, month) => TreasuryRepo.getMonthlyClose(db, month as string))
 handle('monthlyClose:approve',   (db, month, dataJson, userId) => TreasuryRepo.approveMonthClose(db, month as string, dataJson as string, userId as number))
 handle('monthlyClose:unapprove', (db, month, userId) => TreasuryRepo.unapproveMonthClose(db, month as string, userId as number))
 
 // ===== الإحصائيات (داشبورد + مالية) =====
-handle('stats:overview',   (db, month) => StatsRepo.getOverview(db, month as string))
 handle('stats:financials', (db, month) => StatsRepo.getFinancials(db, month as string))
 
 // ===== CRM: العملاء والموردون =====
@@ -420,20 +409,6 @@ handle('settings:getAll', (db) => {
 })
 
 // ===== النسخ الاحتياطي =====
-ipcMain.handle('backup:now', async () => {
-  try {
-    const db       = getDb()
-    const src      = (db as unknown as { filename: string }).filename
-    const backupDir = backupsDir()
-    const date   = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    const dest   = join(backupDir, `backup-${date}.db`)
-    copyFileSync(src, dest)
-    return ok(dest)
-  } catch (e) {
-    return err((e as Error).message)
-  }
-})
-
 ipcMain.handle('backup:openFolder', async () => {
   const dir = backupsDir()
   shell.openPath(dir)

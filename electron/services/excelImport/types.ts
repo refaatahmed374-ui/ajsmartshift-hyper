@@ -20,7 +20,6 @@ export interface RawFawry {
   basicReceive?: number; basicDeliver?: number
   airReceive?: number; airDeliver?: number
   cashoutReceive?: number; cashoutDeliver?: number
-  cashoutAdd?: number; cashoutDiscount?: number
   fawryToBasic?: number; fawryToAir?: number
   cashoutToBasic?: number; cashoutToAir?: number
   programSales?: number                 // «مبيعات البرنامج»

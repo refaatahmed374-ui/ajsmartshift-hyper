@@ -734,7 +734,6 @@ td .tabular-nums {
 .aj-icon-customers     { color: #6366f1; } /* indigo */
 .aj-icon-suppliers     { color: #14b8a6; } /* تركواز */
 .aj-icon-users         { color: #d946ef; } /* فوشيا */
-.aj-icon-audit         { color: #f97316; } /* برتقالي */
 .aj-icon-backup        { color: #22c55e; } /* أخضر */
 .aj-icon-settings      { color: #64748b; } /* رمادي */
 .aj-icon-categories    { color: #ec4899; } /* وردي */
@@ -750,7 +749,6 @@ td .tabular-nums {
 .aj-nav-item-active .aj-icon-customers,
 .aj-nav-item-active .aj-icon-suppliers,
 .aj-nav-item-active .aj-icon-users,
-.aj-nav-item-active .aj-icon-audit,
 .aj-nav-item-active .aj-icon-backup,
 .aj-nav-item-active .aj-icon-settings,
 .aj-nav-item-active .aj-icon-categories,

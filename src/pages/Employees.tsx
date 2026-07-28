@@ -73,7 +73,7 @@ export default function Employees() {
   // الراتب المستحق لكل موظف حسب الوضع المختار
   function dueSalary(f: EmployeeFinancials): number {
     const mode = getSalaryMode(f.employeeId)
-    return mode === 'hours' ? (f.netByHours - f.penaltyByHours) : (f.netByDays - f.penaltyByDays)
+    return mode === 'hours' ? (f.netByHours - f.penaltyByHours + f.bonusAmount) : (f.netByDays - f.penaltyByDays + f.bonusAmount)
   }
   const payrollTotal = financials.reduce((s, f) => s + Math.max(0, dueSalary(f)), 0)
 
@@ -156,6 +156,45 @@ export default function Employees() {
     } else {
       setShowWarning(false)
     }
+  }
+
+  // ===== مكافأة الموظف — بجوار الجزاء في تبويب الحضور، لا تؤثر على أيام الحضور =====
+  type BonusMode = 'days' | 'value'
+  const [bonusDialog,     setBonusDialog]     = useState<{ emp: Employee; current: number } | null>(null)
+  const [bonusMode,       setBonusMode]       = useState<BonusMode>('value')
+  const [bonusDaysInput,  setBonusDaysInput]  = useState('')
+  const [bonusValueInput, setBonusValueInput] = useState('')
+
+  function openBonusDialog(emp: Employee) {
+    const current = savedToday[emp.id]?.bonusAmount ?? 0
+    setBonusDialog({ emp, current })
+    setBonusMode('value')
+    setBonusValueInput(current > 0 ? String(current / 100) : '')
+    setBonusDaysInput('')
+  }
+
+  function bonusDailyWage(emp: Employee): number {
+    return Math.round(emp.monthlySalary / 30)
+  }
+
+  function computeBonusPias(): number {
+    if (!bonusDialog) return 0
+    if (bonusMode === 'days') {
+      const days = parseFloat(bonusDaysInput) || 0
+      return Math.round(days * bonusDailyWage(bonusDialog.emp))
+    }
+    return parsePias(bonusValueInput || '0')
+  }
+
+  async function saveEmployeeBonus() {
+    if (!bonusDialog) return
+    try {
+      const amount = computeBonusPias()
+      await call(api.emp.setBonus(bonusDialog.emp.id, attDate, amount))
+      show(amount === 0 ? '✓ تم إلغاء المكافأة' : `✓ تم تسجيل مكافأة ${fmt(amount)} ج`, 'success')
+      await loadSavedForDate()
+      setBonusDialog(null)
+    } catch (e) { show((e as Error).message, 'error') }
   }
 
   async function loadEmployees() {
@@ -453,6 +492,7 @@ export default function Employees() {
                       <th className="th">وقت الانصراف</th>
                       <th className="th text-center" style={{ width: 90, color: 'var(--accent)' }}>ساعات العمل</th>
                       <th className="th text-center" style={{ width: 110, color: '#ef4444' }}>جزاء</th>
+                      <th className="th text-center" style={{ width: 110, color: '#22c55e' }}>مكافأة</th>
                       <th className="th">محفوظ؟</th>
                       <th className="th" style={{ width: 90 }}></th>
                     </tr>
@@ -522,6 +562,24 @@ export default function Employees() {
                                   }}
                                   title="اضغط لتسجيل جزاء">
                                   {penalty > 0 ? '⚠ ' : ''}{label}
+                                </button>
+                              )
+                            })()}
+                          </td>
+                          {/* عمود المكافأة — بجوار الجزاء، لا يؤثر على أيام الحضور */}
+                          <td className="td text-center">
+                            {(() => {
+                              const bonus = saved?.bonusAmount ?? 0
+                              return (
+                                <button onClick={() => openBonusDialog(emp)}
+                                  className="px-2 py-1 rounded-md text-2xs font-bold transition-all w-full"
+                                  style={{
+                                    background: bonus > 0 ? '#22c55e18' : 'var(--inner-bg)',
+                                    border: `1px solid ${bonus > 0 ? '#22c55e55' : 'var(--inner-border)'}`,
+                                    color: '#22c55e',
+                                  }}
+                                  title="اضغط لتسجيل مكافأة">
+                                  {bonus > 0 ? `🎁 ${fmt(bonus)} ج` : 'لا يوجد'}
                                 </button>
                               )
                             })()}
@@ -646,6 +704,7 @@ export default function Employees() {
                 <th className="th">أجر باليوم</th>
                 <th className="th text-danger">السلف</th>
                 <th className="th text-danger">الجزاءات</th>
+                <th className="th" style={{ color: '#22c55e' }}>المكافآت</th>
                 <th className="th" style={{ color: '#3b82f6' }}>مستحق بالساعة</th>
                 <th className="th" style={{ color: '#10b981' }}>مستحق باليوم</th>
                 <th className="th" style={{ color: 'var(--accent)', minWidth: 180 }}>الراتب المعتمد</th>
@@ -655,9 +714,9 @@ export default function Employees() {
                   const mode    = getSalaryMode(f.employeeId)
                   // الجزاء حسب الوضع: بالأيام أو بالساعة (من الحضور)
                   const penaltyValue = mode === 'hours' ? f.penaltyByHours : f.penaltyByDays
-                  // الراتب المستحق = صافي (حسب الوضع) − الجزاء (حسب الوضع)
-                  const dueByHours = f.netByHours - f.penaltyByHours
-                  const dueByDays  = f.netByDays  - f.penaltyByDays
+                  // الراتب المستحق = صافي (حسب الوضع) − الجزاء (حسب الوضع) + المكافآت
+                  const dueByHours = f.netByHours - f.penaltyByHours + f.bonusAmount
+                  const dueByDays  = f.netByDays  - f.penaltyByDays  + f.bonusAmount
                   const dueValue   = mode === 'hours' ? dueByHours : dueByDays
                   const modeColor  = mode === 'hours' ? '#3b82f6' : '#10b981'
                   const hidden = isSalaryHidden(f.employeeId)
@@ -679,7 +738,7 @@ export default function Employees() {
                       <td className="td tabular-nums text-danger">{f.absentDays}</td>
                       <td className="td tabular-nums">{(f.totalMinutes / 60).toFixed(1)} س</td>
                       {hidden ? (
-                        <td className="td tabular-nums text-2xs" style={{ color: 'var(--txt-3)' }} colSpan={7}>
+                        <td className="td tabular-nums text-2xs" style={{ color: 'var(--txt-3)' }} colSpan={8}>
                           🔒 بيانات الراتب مخفية — اضغط على أيقونة العين لإظهارها
                         </td>
                       ) : (
@@ -694,6 +753,7 @@ export default function Employees() {
                               ({f.penaltyDays} يوم)
                             </span>
                           </td>
+                          <td className="td tabular-nums" style={{ color: '#22c55e' }}>{fmt(f.bonusAmount)}</td>
                           {/* الراتب المستحق بالساعة (تلقائي) */}
                           <td className="td tabular-nums font-bold" style={{ color: '#3b82f6' }}>{fmt(dueByHours)} ج</td>
                           {/* الراتب المستحق باليوم (تلقائي) */}
@@ -724,7 +784,7 @@ export default function Employees() {
               {financials.length > 0 && (
                 <tfoot>
                   <tr style={{ borderTop: '2px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
-                    <td className="td" colSpan={10} style={{ fontWeight: 800, color: 'var(--txt-1)', textAlign: 'left' }}>
+                    <td className="td" colSpan={11} style={{ fontWeight: 800, color: 'var(--txt-1)', textAlign: 'left' }}>
                       💰 إجمالي الرواتب المستحقة (المعتمدة)
                     </td>
                     <td className="td">
@@ -757,17 +817,19 @@ export default function Employees() {
               <span style={{ color: '#10b981', fontWeight: 700 }}>مستحق باليوم</span> = (أيام الحضور × أجر باليوم) − السلف
             </div>
             <div className="mt-1">
-              <span style={{ color: '#10b981', fontWeight: 700 }}>الراتب المستحق (باليوم)</span> = مستحق باليوم − (أيام الجزاء × أجر اليوم)
+              <span style={{ color: '#10b981', fontWeight: 700 }}>الراتب المستحق (باليوم)</span> = مستحق باليوم − (أيام الجزاء × أجر اليوم) + المكافآت
             </div>
             <div className="mt-1">
-              <span style={{ color: '#3b82f6', fontWeight: 700 }}>الراتب المستحق (بالساعة)</span> = مستحق بالساعة − (أيام الجزاء × ساعات اليوم × أجر الساعة)
+              <span style={{ color: '#3b82f6', fontWeight: 700 }}>الراتب المستحق (بالساعة)</span> = مستحق بالساعة − (أيام الجزاء × ساعات اليوم × أجر الساعة) + المكافآت
             </div>
             <div className="mt-2 pt-2" style={{ borderTop: '1px solid var(--inner-border)' }}>
               📍 <b>السلف</b>: من بنود اليومية بتصنيف <b>"مصروفات" ← "سلفة موظف"</b> مع تحديد الموظف
               <br />
               📍 <b>الجزاءات</b>: من <b>تبويب تسجيل الحضور</b> — اضغط زر "جزاء" بجوار الموظف (نصف يوم / يوم / 3 أيام كحد أقصى)
               <br />
-              💡 <b>ملاحظة:</b> أيام الجزاء لا تُخصم من أيام الحضور — تُحسب فقط في قيمة الراتب
+              📍 <b>المكافآت</b>: من <b>تبويب تسجيل الحضور</b> — اضغط زر "مكافأة" بجوار الجزاء، بعدد أيام (× أجر اليوم) أو بقيمة مباشرة
+              <br />
+              💡 <b>ملاحظة:</b> أيام الجزاء والمكافآت لا تُخصم أو تُضاف لأيام الحضور — تُحسب فقط في قيمة الراتب
             </div>
           </div>
         </div>
@@ -1030,6 +1092,103 @@ export default function Employees() {
                 className={showWarning ? 'btn-danger-pro' : 'btn-success-pro'}
                 style={{ fontSize: 13, padding: '8px 18px' }}>
                 {showWarning ? 'موافق على أي حال' : 'حفظ الجزاء'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════════ Dialog المكافأة — بجوار الجزاء ═══════════════ */}
+      {bonusDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(6px)' }}
+          onClick={() => setBonusDialog(null)}>
+          <div className="card" style={{ width: '100%', maxWidth: 460, padding: 0 }}
+            onClick={e => e.stopPropagation()}>
+
+            {/* رأس */}
+            <div className="flex items-center gap-3 px-5 py-3"
+              style={{ borderBottom: '1px solid var(--inner-border)', background: 'rgba(34,197,94,0.06)' }}>
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center"
+                style={{ background: 'rgba(34,197,94,0.18)', color: '#22c55e' }}>
+                🎁
+              </div>
+              <div>
+                <div className="font-bold" style={{ color: 'var(--txt-1)', fontSize: 15 }}>
+                  تسجيل مكافأة — {bonusDialog.emp.name}
+                </div>
+                <div style={{ color: 'var(--txt-3)', fontSize: 12 }}>
+                  بتاريخ {attDate}
+                </div>
+              </div>
+            </div>
+
+            {/* محتوى */}
+            <div className="p-5 space-y-3">
+              <div style={{ fontSize: 13, color: 'var(--txt-2)' }}>
+                طريقة احتساب المكافأة:
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setBonusMode('days')}
+                  className="py-2.5 rounded-xl font-bold transition-all border-2"
+                  style={bonusMode === 'days'
+                    ? { background: '#22c55e', borderColor: '#22c55e', color: 'white', boxShadow: '0 4px 14px #22c55e55' }
+                    : { background: '#22c55e12', borderColor: '#22c55e55', color: '#22c55e' }}>
+                  بعدد الأيام
+                </button>
+                <button onClick={() => setBonusMode('value')}
+                  className="py-2.5 rounded-xl font-bold transition-all border-2"
+                  style={bonusMode === 'value'
+                    ? { background: '#22c55e', borderColor: '#22c55e', color: 'white', boxShadow: '0 4px 14px #22c55e55' }
+                    : { background: '#22c55e12', borderColor: '#22c55e55', color: '#22c55e' }}>
+                  بقيمة مباشرة
+                </button>
+              </div>
+
+              {bonusMode === 'days' ? (
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--txt-2)' }}>عدد أيام المكافأة</label>
+                  <input className="field tabular-nums" type="number" min={0} step="0.5" autoFocus
+                    value={bonusDaysInput} onChange={e => setBonusDaysInput(e.target.value)} placeholder="0" />
+                  <div style={{ fontSize: 11, color: 'var(--txt-3)', marginTop: 4, lineHeight: 1.6 }}>
+                    = {parseFloat(bonusDaysInput) || 0} يوم × {fmt(bonusDailyWage(bonusDialog.emp))} ج (أجر يوم الموظف كامل)
+                    {' '}= <b style={{ color: '#22c55e' }}>{fmt(computeBonusPias())} ج</b>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <label style={{ fontSize: 12, color: 'var(--txt-2)' }}>قيمة المكافأة (جنيه)</label>
+                  <input className="field tabular-nums" type="number" min={0} autoFocus
+                    value={bonusValueInput} onChange={e => setBonusValueInput(e.target.value)} placeholder="0.00" />
+                </div>
+              )}
+
+              {/* خيار إلغاء المكافأة */}
+              {bonusDialog.current > 0 && (
+                <button onClick={() => { setBonusMode('value'); setBonusValueInput('0'); setBonusDaysInput('0') }}
+                  className="w-full py-2 rounded-lg text-xs transition-all"
+                  style={{
+                    background: computeBonusPias() === 0 ? '#64748b' : 'transparent',
+                    color: computeBonusPias() === 0 ? 'white' : 'var(--txt-3)',
+                    border: '1px solid var(--inner-border)',
+                  }}>
+                  بدون مكافأة (إلغاء)
+                </button>
+              )}
+
+              <div className="rounded-lg p-2.5 text-2xs" style={{ background: 'var(--inner-bg)', color: 'var(--txt-3)', lineHeight: 1.7 }}>
+                💡 المكافأة لا تُحسب ضمن أيام الحضور — تظهر كقيمة مالية منفصلة في تبويب "الحسابات المالية" وتُضاف لصافي الراتب المستحق للموظف عن هذا الشهر.
+              </div>
+            </div>
+
+            {/* الأزرار */}
+            <div className="flex items-center justify-end gap-2 px-5 py-3"
+              style={{ borderTop: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+              <button onClick={() => setBonusDialog(null)} className="btn-ghost btn-sm">
+                إلغاء
+              </button>
+              <button onClick={saveEmployeeBonus} className="btn-success-pro" style={{ fontSize: 13, padding: '8px 18px' }}>
+                حفظ المكافأة
               </button>
             </div>
           </div>

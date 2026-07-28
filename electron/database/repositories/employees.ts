@@ -26,6 +26,7 @@ function row2att(r: Record<string, unknown>): Attendance {
     checkOut:    r.check_out as string | null,
     hoursWorked: r.hours_worked as number,
     penaltyDays: (r.penalty_days as number) ?? 0,
+    bonusAmount: (r.bonus_amount as number) ?? 0,
   }
 }
 
@@ -134,6 +135,22 @@ export function setAttendancePenalty(
   `).run(employeeId, date, penalty)
 }
 
+// مكافأة الموظف — بجوار الجزاء، قيمة مالية (قروش) لا عدد أيام؛ لا تُخصم/تُضاف لأيام الحضور
+export function setAttendanceBonus(
+  db: Database.Database,
+  employeeId: number,
+  date: string,
+  bonusAmount: number,
+): void {
+  const bonus = Math.max(0, bonusAmount)
+  // إذا الصف غير موجود — أنشئه بحالة 'present' افتراضياً (نفس منطق الجزاء)
+  db.prepare(`
+    INSERT INTO attendance (employee_id, date, status, check_in, check_out, hours_worked, bonus_amount)
+    VALUES (?, ?, 'present', NULL, NULL, 0, ?)
+    ON CONFLICT(employee_id, date) DO UPDATE SET bonus_amount=excluded.bonus_amount
+  `).run(employeeId, date, bonus)
+}
+
 export function deleteAttendance(db: Database.Database, id: number): void {
   db.prepare(`DELETE FROM attendance WHERE id=?`).run(id)
 }
@@ -150,9 +167,9 @@ export function getMonthlyFinancials(db: Database.Database, month: string): Empl
   return emps.map(emp => {
     // الحضور
     const att = db.prepare(
-      `SELECT status, hours_worked, COALESCE(penalty_days, 0) AS penalty_days
+      `SELECT status, hours_worked, COALESCE(penalty_days, 0) AS penalty_days, COALESCE(bonus_amount, 0) AS bonus_amount
        FROM attendance WHERE employee_id=? AND date LIKE ?`
-    ).all(emp.id, `${month}%`) as { status: string; hours_worked: number; penalty_days: number }[]
+    ).all(emp.id, `${month}%`) as { status: string; hours_worked: number; penalty_days: number; bonus_amount: number }[]
 
     const presentRows = att.filter(a => a.status === 'present')
     const presentDays = presentRows.length
@@ -161,6 +178,8 @@ export function getMonthlyFinancials(db: Database.Database, month: string): Empl
 
     // v2.27.0 — مجموع الجزاءات بالأيام من الحضور (لا تُخصم من أيام الحضور)
     const penaltyDays = att.reduce((s, a) => s + (a.penalty_days || 0), 0)
+    // مجموع مكافآت الشهر (قروش) — لا تؤثر على أيام الحضور، تُضاف مباشرة للراتب المستحق
+    const bonusAmount = att.reduce((s, a) => s + (a.bonus_amount || 0), 0)
 
     const dailyWage  = Math.round(emp.monthlySalary / 30)
     const totalHours = totalMinutes / 60
@@ -206,9 +225,10 @@ export function getMonthlyFinancials(db: Database.Database, month: string): Empl
       penaltyDays,
       penaltyByDays,
       penaltyByHours,
+      bonusAmount,
       netByHours:    wageByHours - advances,
       netByDays:     wageByDays  - advances,
-      dueSalary:     wageByDays  - advances - penaltyByDays,
+      dueSalary:     wageByDays  - advances - penaltyByDays + bonusAmount,
     } as EmployeeFinancials
   })
 }

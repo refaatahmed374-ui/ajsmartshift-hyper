@@ -280,9 +280,14 @@ export default function Reports() {
           <h2 style={{ fontSize: '18px', fontWeight: 700, color: 'var(--txt-1)' }}>
             {cfg.label} — {month}
           </h2>
-          <button onClick={exportPDF} disabled={exporting} className="btn-primary btn-sm">
-            <Icons.Download size={14} /> {exporting ? 'جاري التصدير...' : 'تصدير PDF'}
-          </button>
+          {/* تنظيف: تبويبا "التقفيل الشهري" و"التقفيل السنوي" لهما زر "تصدير PDF" مخصَّص خاص بهما
+              (داخل MonthlyCloseReport/AnnualCloseReport) — هذا الزر العام كان يظهر بجوارهما بنفس
+              الاسم بالضبط رغم أنه لا يُصدِّر محتوى ذا معنى لهذين التبويبين، فأُخفي عليهما لمنع التكرار */}
+          {tab !== 'monthly_close' && tab !== 'annual_close' && (
+            <button onClick={exportPDF} disabled={exporting} className="btn-primary btn-sm">
+              <Icons.Download size={14} /> {exporting ? 'جاري التصدير...' : 'تصدير PDF'}
+            </button>
+          )}
         </div>
 
         {loading ? (
@@ -1282,10 +1287,18 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
       if (!f) continue
       const r = calcFawry(f)
       basicSales += r.basicSales; airSales += r.airSales
+      // معادلة مطابقة لِـ ShiftSheet.tsx (v2.34.5) — الصيغة القديمة (visaSales − cashoutDiff مباشرة)
+      // كانت تُنتج قيمًا خاطئة تمامًا عند عجز كاش أوت؛ الصواب: عند العجز تُخصَم "إضافة كاش أوت" الفعلية
+      // المرحَّلة فعليًا للأساسي/الإير تايم (لا الفرق الخام)
       const cashoutDiff = r.cashoutSales
-      if (cashoutDiff > 0) cashoutAddTotal += cashoutDiff; else cashoutDiscountTotal += -cashoutDiff
+      const cashoutDiscountAmt = cashoutDiff < 0 ? -cashoutDiff : 0
+      const cashoutAddAmt = cashoutDiff >= 0
+        ? cashoutDiff
+        : ((f.cashoutToBasic ?? 0) + (f.cashoutToAir ?? 0)) - cashoutDiscountAmt
+      cashoutAddTotal += cashoutAddAmt
+      cashoutDiscountTotal += cashoutDiscountAmt
       const visaThisShift = tx.filter(t => t.shiftId === s.id && t.subCategoryName === 'مبيعات فيزا').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
-      fawryCommission += visaThisShift - cashoutDiff
+      fawryCommission += visaThisShift - cashoutAddAmt
     }
     const fawrySales = basicSales + airSales // ماكينة فوري — تفصيل ضمن POS، لا تُضاف للإجمالي
     const journalSales = sumByType('إيراد', 'inout')
@@ -1958,7 +1971,10 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
                   <span className="text-xs" style={{ color: 'var(--txt-2)' }}>
                     صافي {isMissing(d.netProfit) ? '—' : <ValueBox color={(d.netProfit ?? 0) >= 0 ? '#22c55e' : '#ef4444'}>{fmt(metricNum(d.netProfit ?? 0))}</ValueBox>}
                   </span>
-                  <button onClick={() => exportClosePDF(r.month, d)} className="btn-next btn-sm" style={{ fontSize: 10, padding: '3px 10px' }}>📄 PDF</button>
+                  {/* تنظيف: للشهر المعروض حاليًا فوق (لو معتمَد) زر "تصدير PDF" بنفس البيانات بالضبط في الشريط العلوي — إخفاؤه هنا يمنع زرين متطابقين */}
+                  {r.month !== month && (
+                    <button onClick={() => exportClosePDF(r.month, d)} className="btn-next btn-sm" style={{ fontSize: 10, padding: '3px 10px' }}>📄 PDF</button>
+                  )}
                 </div>
               )
             })}

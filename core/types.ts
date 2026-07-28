@@ -104,6 +104,7 @@ export interface Attendance {
   checkOut: string | null
   hoursWorked: number    // دقائق
   penaltyDays: number    // v2.27.0 — جزاء بالأيام (0 / 0.5 / 1 / 3)
+  bonusAmount: number    // مكافأة (قروش) — مُدخلة يدويًا (بالقيمة مباشرة أو أيام×أجر اليوم)، لا تؤثر على أيام الحضور
 }
 
 // ===== ملخص مالي شهري للموظف =====
@@ -124,9 +125,10 @@ export interface EmployeeFinancials {
   penaltyDays:   number   // v2.27.0 — مجموع الجزاءات بالأيام (من الحضور)
   penaltyByDays: number   // قروش = penaltyDays × dailyWage
   penaltyByHours:number   // قروش = penaltyDays × workHours × hourlyRate
+  bonusAmount:   number   // قروش — مجموع مكافآت الشهر (من سجلات الحضور)
   netByHours:    number   // قروش = wageByHours − advances
   netByDays:     number   // قروش = wageByDays − advances
-  dueSalary:     number   // قروش = wageByDays − advances − penaltyByDays
+  dueSalary:     number   // قروش = wageByDays − advances − penaltyByDays + bonusAmount
 }
 
 // ===== الشيفتات =====
@@ -226,18 +228,15 @@ export interface ShiftFawry {
   // كاش أوت
   cashoutReceive: number
   cashoutDeliver: number
-  // كاش أوت (يدوي — ADR-012 v2)
-  cashoutAdd: number
-  cashoutDiscount: number
   // تحويلات
   fawryToBasic: number
   fawryToAir: number
   cashoutToBasic: number
   cashoutToAir: number
-  // مبيعات فوري قبل العمولة (يدوي)
+  // مبيعات فوري قبل العمولة (يدوي — تاريخي، للشيفتات المستورَدة من الإكسل فقط)
   programSales: number
-  // نسبة عمولة فوري (يدوي) — مخزّنة ×100 (مثال: 2.00% = 200) — ADR-012 v2
-  commissionPct: number
+  // مبيعات فوري + الربحية — يدخلها العميل مباشرة (بعد إلغاء الحساب التلقائي بطلب العميل)
+  fawryTotalManual: number
   // العمليات
   firstVoucher: number
   lastVoucher: number
@@ -251,37 +250,6 @@ export interface ShiftCustody {
   managementPaid: number // إدارة/محسوب
 }
 
-// ===== الكاشير =====
-export interface ShiftCashier {
-  id: number
-  shiftId: number
-  totalPaid: number  // مجموع دفع الكاشير
-}
-
-// ===== حضور الموظفين =====
-export interface EmployeeAttendance {
-  id: number
-  employeeId: number
-  shiftId: number
-  checkIn: string
-  checkOut: string | null
-  hoursWorked: number  // دقائق
-}
-
-// ===== سجل التعديلات =====
-export interface AuditLog {
-  id: number
-  userId: number
-  userName: string
-  entityType: string
-  entityId: number
-  operation: string
-  valueBefore: string
-  valueAfter: string
-  reason: string
-  createdAt: string
-}
-
 // ===== إعدادات =====
 export interface Setting {
   key: string
@@ -293,34 +261,13 @@ export interface FawryResult {
   basicSales: number       // مبيعات أساسي
   airSales: number         // مبيعات إير تايم
   cashoutSales: number     // مبيعات كاش أوت
-  cashoutDiscount: number  // خصم كاش أوت (لما تسليم < استلام)
-  cashoutAdd: number       // إضافة كاش أوت = مبيعات فيزا − 1.8%
   totalFawrySales: number  // إجمالي مبيعات فوري
-  profitability: number    // الربحية = مبيعات البرنامج − مبيعات فوري
+  profitability: number    // الربحية = مبيعات فوري + الربحية (يدوي) − مبيعات فوري المحسوبة
   operationsCount: number  // عدد العمليات = آخر بون − أول بون
 }
 
 export interface CustodyResult {
   remaining: number  // باقي العهدة = إضافة − (إدارة/محسوب)
-}
-
-export interface ShiftAnalysisResult {
-  totalIn: number
-  totalOut: number
-  expectedCash: number
-  actualCash: number
-  difference: number
-  status: BalanceStatus
-}
-
-export interface EmployeeMonthlyResult {
-  employeeId: number
-  name: string
-  hoursWorked: number
-  hourlyRate: number
-  advances: number  // قروش
-  grossSalary: number
-  netSalary: number
 }
 
 // ===== التنبيهات =====

@@ -25,7 +25,7 @@ import type { RawFawry } from './types'
 // حقول فوري المالية (تُخزَّن بالقروش ×100). البون أرقام لا مبالغ.
 const FAWRY_MONEY: (keyof RawFawry)[] = [
   'basicReceive', 'basicDeliver', 'airReceive', 'airDeliver',
-  'cashoutReceive', 'cashoutDeliver', 'cashoutAdd', 'cashoutDiscount',
+  'cashoutReceive', 'cashoutDeliver',
   'fawryToBasic', 'fawryToAir', 'cashoutToBasic', 'cashoutToAir', 'programSales',
 ]
 

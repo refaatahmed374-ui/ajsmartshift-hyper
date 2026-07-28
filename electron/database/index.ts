@@ -645,6 +645,19 @@ const MIGRATIONS = [
    )
    WHERE sub_category_id IS NULL
      AND main_category_id = (SELECT id FROM main_categories WHERE name = 'مشتريات')`,
+
+  // "مبيعات فوري + الربحية" أصبحت خلية يدوية يدخلها العميل مباشرة بدل حسابها تلقائيًا
+  `ALTER TABLE shift_fawry ADD COLUMN fawry_total_manual INTEGER NOT NULL DEFAULT 0`,
+
+  // تنظيف: أعمدة/جداول لم تُقرأ أو تُكتب فعليًا في أي شاشة من البرنامج (تدقيق كود شامل)
+  `ALTER TABLE shift_fawry DROP COLUMN cashout_add`,
+  `ALTER TABLE shift_fawry DROP COLUMN cashout_discount`,
+  `ALTER TABLE shift_fawry DROP COLUMN commission_pct`,
+  `ALTER TABLE shifts DROP COLUMN actual_cash`,
+  `DROP TABLE IF EXISTS audit_log`,
+
+  // مكافأة الموظف — بجوار الجزاء في تبويب الحضور، لا تؤثر على أيام الحضور، تدخل في معادلة الراتب المستحق
+  `ALTER TABLE attendance ADD COLUMN bonus_amount INTEGER NOT NULL DEFAULT 0`,
 ]
 
 let _db: Database.Database | null = null
@@ -766,7 +779,7 @@ export function closeDb(): void {
 const BUSINESS_TABLES = [
   'transactions', 'journals', 'shift_fawry', 'shift_custody', 'shifts',
   'employee_attendance', 'attendance', 'treasury_adjustments',
-  'payroll_reports', 'monthly_close_reports', 'audit_log', 'sync_queue',
+  'payroll_reports', 'monthly_close_reports', 'sync_queue',
   'notifications', 'party_ledger', 'customers', 'suppliers', 'employees',
   'smart_labels', 'unknown_labels', 'import_history',
 ]

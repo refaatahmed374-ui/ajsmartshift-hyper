@@ -36,6 +36,8 @@ export default function Treasury() {
   const [openInput, setOpenInput] = useState('')
   const [openDateInput, setOpenDateInput] = useState(() => new Date().toISOString().slice(0, 10))
   const [savingOpen, setSavingOpen] = useState(false)
+  // بطلب العميل — شرح استخدام "تعديل رصيد أول الصندوق" وتحذيراته، يظهر عند الضغط على ⓘ
+  const [showOpeningHelp, setShowOpeningHelp] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -74,6 +76,25 @@ export default function Treasury() {
   const balance = data?.currentBalance ?? 0
   const balanceColor = balance >= 0 ? '#10b981' : '#ef4444'
 
+  // بطلب العميل — آخر حركة خاصة بكل بطاقة (آخر إضافة / آخر صرف / آخر حركة على الرصيد عمومًا)
+  // data.movements مرتّبة تصاعديًا بالتاريخ من الخادم، فآخر عنصر = الأحدث
+  const lastAdded = useMemo(() => {
+    const rows = (data?.movements ?? []).filter(m => m.cashIn > 0)
+    return rows.length ? rows[rows.length - 1] : null
+  }, [data])
+  const lastSpent = useMemo(() => {
+    const rows = (data?.movements ?? []).filter(m => m.mgmtOut > 0)
+    return rows.length ? rows[rows.length - 1] : null
+  }, [data])
+  const lastAny = useMemo(() => {
+    const rows = data?.movements ?? []
+    return rows.length ? rows[rows.length - 1] : null
+  }, [data])
+  const movementWho = (m: Movement) => m.kind === 'adjustment' ? m.label : `شيفت #${m.shiftNum}`
+  const describeAdded = lastAdded ? `آخر حركة: ${movementWho(lastAdded)} · ${fmtDate(lastAdded.date)} · +${fmt(lastAdded.cashIn)} ج` : 'لا توجد حركة إضافة هذا الشهر'
+  const describeSpent = lastSpent ? `آخر حركة: ${movementWho(lastSpent)} · ${fmtDate(lastSpent.date)} · −${fmt(lastSpent.mgmtOut)} ج` : 'لا توجد حركة صرف هذا الشهر'
+  const describeAny   = lastAny   ? `آخر حركة: ${movementWho(lastAny)} · ${fmtDate(lastAny.date)}` : 'لا توجد حركات هذا الشهر'
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
 
@@ -105,54 +126,19 @@ export default function Treasury() {
         </div>
       </div>
 
-      {/* ═══════════ شريط KPIs الاحترافي (4 بطاقات) ═══════════ */}
+      {/* ═══════════ شريط KPIs الاحترافي (4 بطاقات) — بطلب العميل: بالترتيب رصيد أول ← مضاف ← منصرف ← رصيد آخر ═══════════ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 flex-shrink-0">
-        {/* الرصيد الحالي — بطاقة بارزة (الأهم) */}
-        <div className="rounded-2xl p-4 relative overflow-hidden"
-          style={{
-            background: `linear-gradient(135deg, ${balanceColor}18, ${balanceColor}08)`,
-            border: `1.5px solid ${balanceColor}60`,
-            boxShadow: `0 4px 18px ${balanceColor}25`,
-          }}>
-          {/* glow background */}
-          <div style={{
-            position: 'absolute', top: -30, right: -30, width: 100, height: 100,
-            borderRadius: '50%', background: balanceColor, opacity: 0.12, filter: 'blur(28px)',
-          }} />
-          <div className="flex items-start justify-between mb-2 relative">
-            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--txt-2)' }}>
-              رصيد الصندوق الحالي
-            </span>
-            <div className="p-1.5 rounded-lg" style={{
-              background: balanceColor + '25', color: balanceColor,
-            }}>
-              <Icons.Fund size={14} />
-            </div>
-          </div>
-          <div className="relative">
-            <div className="tabular-nums" style={{
-              fontSize: 26, fontWeight: 900, color: balanceColor, lineHeight: 1.1,
-            }}>
-              {fmt(balance)}
-            </div>
-            <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
-              ج · = رصيد أول + مضاف − منصرف
-            </div>
-          </div>
-        </div>
 
-        {/* رصيد أول الصندوق (يدوي — قابل للتعديل) */}
+        {/* 1) رصيد أول الصندوق (يدوي — قابل للتعديل) */}
         <div className="rounded-2xl p-4 relative overflow-hidden"
           style={{ background: 'linear-gradient(135deg, #06b6d410, #06b6d404)', border: '1px solid #06b6d445' }}>
           <div className="flex items-start justify-between mb-2">
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt-2)' }}>رصيد أول الصندوق</span>
             {!editingOpen && (
-              <button onClick={() => {
-                setOpenInput(String((data?.opening ?? 0) / 100))
-                setOpenDateInput(new Date().toISOString().slice(0, 10))
-                setEditingOpen(true)
-              }} className="p-1.5 rounded-lg" style={{ background: '#06b6d420', color: '#06b6d4' }} title="تعديل">
-                <Icons.Settings size={13} />
+              <button onClick={() => setShowOpeningHelp(v => !v)} className="p-1 rounded-md transition-all"
+                style={{ color: showOpeningHelp ? '#06b6d4' : 'var(--txt-3)', background: showOpeningHelp ? '#06b6d420' : 'transparent' }}
+                title="كيف أستخدم هذا الرصيد؟">
+                <Icons.Info size={14} />
               </button>
             )}
           </div>
@@ -178,30 +164,103 @@ export default function Treasury() {
                 {fmt(data?.opening ?? 0)} <span style={{ fontSize: 11 }}>ج</span>
               </div>
               <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
-                بتاريخ {data?.openingDate && data.openingDate !== '0000-01-01' ? fmtDate(data.openingDate) : '—'}
+                آخر حركة: تحديد الرصيد بتاريخ {data?.openingDate && data.openingDate !== '0000-01-01' ? fmtDate(data.openingDate) : '—'}
               </div>
+              {/* بطلب العميل — الزر كان أيقونة صغيرة سهل تفويتها، أصبح زرًا واضحًا بنص + لون مميّز */}
+              <button onClick={() => {
+                setOpenInput(String((data?.opening ?? 0) / 100))
+                setOpenDateInput(new Date().toISOString().slice(0, 10))
+                setEditingOpen(true)
+                setShowOpeningHelp(false)
+              }} className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all hover:scale-[1.02]"
+                style={{ background: '#06b6d4', color: 'white', fontSize: 11.5, boxShadow: '0 2px 10px #06b6d455' }}>
+                <Icons.Settings size={13} /> تعديل رصيد أول الصندوق
+              </button>
             </>
           )}
         </div>
 
-        {/* المضاف إلى الخزينة */}
+        {/* 2) المضاف للصندوق */}
         <KpiCard
-          label="المضاف إلى الخزينة"
+          label="مضاف للصندوق"
           value={data?.incomingAll ?? 0}
           icon={<Icons.ArrowRight size={14} />}
           color="#22c55e"
           subLabel={`+ ${fmt(data?.monthIn ?? 0)} هذا الشهر`}
+          movementLabel={describeAdded}
         />
 
-        {/* المنصرف من الإدارة */}
+        {/* 3) المنصرف من الصندوق */}
         <KpiCard
-          label="المنصرف من الإدارة"
+          label="منصرف من الصندوق"
           value={data?.outgoingAll ?? 0}
           icon={<Icons.ArrowRight size={14} className="rotate-180" />}
           color="#ef4444"
           subLabel={`− ${fmt(data?.monthOut ?? 0)} هذا الشهر`}
+          movementLabel={describeSpent}
         />
+
+        {/* 4) رصيد آخر الصندوق — بطاقة بارزة (الأهم) */}
+        <div className="rounded-2xl p-4 relative overflow-hidden"
+          style={{
+            background: `linear-gradient(135deg, ${balanceColor}18, ${balanceColor}08)`,
+            border: `1.5px solid ${balanceColor}60`,
+            boxShadow: `0 4px 18px ${balanceColor}25`,
+          }}>
+          {/* glow background */}
+          <div style={{
+            position: 'absolute', top: -30, right: -30, width: 100, height: 100,
+            borderRadius: '50%', background: balanceColor, opacity: 0.12, filter: 'blur(28px)',
+          }} />
+          <div className="flex items-start justify-between mb-2 relative">
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--txt-2)' }}>
+              رصيد آخر الصندوق
+            </span>
+            <div className="p-1.5 rounded-lg" style={{
+              background: balanceColor + '25', color: balanceColor,
+            }}>
+              <Icons.Fund size={14} />
+            </div>
+          </div>
+          <div className="relative">
+            <div className="tabular-nums" style={{
+              fontSize: 26, fontWeight: 900, color: balanceColor, lineHeight: 1.1,
+            }}>
+              {fmt(balance)}
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
+              ج · = رصيد أول + مضاف − منصرف
+            </div>
+            <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
+              {describeAny}
+            </div>
+          </div>
+        </div>
       </div>
+
+      {/* بطلب العميل — شرح استخدام "رصيد أول الصندوق" + تحذيرات + ماذا يفعل العميل لو الرصيد يبدو غير صحيح */}
+      {showOpeningHelp && (
+        <div className="rounded-2xl p-4 flex-shrink-0" style={{ background: '#06b6d40c', border: '1px solid #06b6d445' }}>
+          <div className="flex items-center gap-2 mb-2.5">
+            <Icons.Info size={15} style={{ color: '#06b6d4' }} />
+            <span style={{ fontSize: 13, fontWeight: 800, color: '#06b6d4' }}>كيف تستخدم "رصيد أول الصندوق"؟</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3" style={{ fontSize: 12, lineHeight: 1.8, color: 'var(--txt-2)' }}>
+            <div>
+              <div className="font-bold mb-1" style={{ color: 'var(--txt-1)' }}>✅ متى تستخدمه</div>
+              بعد عدّ نقدية الصندوق فعليًا وبيدك، اضغط "تعديل" وسجّل الرقم الحقيقي بتاريخ اليوم — يصبح نقطة بداية موثوقة تُبنى عليها كل الحسابات من هذا التاريخ فصاعدًا فقط، بلا أي تأثير على شهور سابقة.
+            </div>
+            <div>
+              <div className="font-bold mb-1" style={{ color: '#f59e0b' }}>⚠️ لو أدخلت رقمًا خطأ</div>
+              الخطأ ينتقل تلقائيًا لكل شيء بعده — الرصيد الحالي، فروق الشيفتات، والتقارير — لأنها كلها محسوبة اعتمادًا على هذه النقطة. راجع الرقم جيدًا قبل الحفظ، ولو اكتشفت خطأ لاحقًا سجّل رصيدًا جديدًا صحيحًا بتاريخ اليوم لتصحيحه.
+            </div>
+            <div>
+              <div className="font-bold mb-1" style={{ color: '#ef4444' }}>🔍 لو الرصيد يبدو غير صحيح</div>
+              راجع بالترتيب: (1) هل كل الشيفتات اتقفلت بنقدية كاشير دقيقة؟ (2) هل أي بند اتسجّل بطريقة دفع "إدارة" بالغلط بدل "كاشير"؟ (3) راجع التسويات اليدوية (سحب/دفع رواتب) في نفس الفترة. لو لسه غير مقتنع، اعتمد رصيدًا جديدًا بعد عدّ فعلي بدل محاولة تصحيح الرقم القديم.
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ═══════════ الجدول الرئيسي بعرض كامل ═══════════ */}
       <div className="card p-0 overflow-hidden flex flex-col" style={{ minHeight: 240 }}>
@@ -375,8 +434,8 @@ export default function Treasury() {
 }
 
 // ═══════════ بطاقة KPI احترافية ═══════════
-function KpiCard({ label, value, icon, color, subLabel }: {
-  label: string; value: number; icon: React.ReactNode; color: string; subLabel?: string;
+function KpiCard({ label, value, icon, color, subLabel, movementLabel }: {
+  label: string; value: number; icon: React.ReactNode; color: string; subLabel?: string; movementLabel?: string;
 }) {
   return (
     <div className="rounded-2xl p-4 relative overflow-hidden transition-all hover:scale-[1.01]"
@@ -398,6 +457,12 @@ function KpiCard({ label, value, icon, color, subLabel }: {
       {subLabel && (
         <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 4 }}>
           {subLabel}
+        </div>
+      )}
+      {/* بطلب العميل — آخر حركة خاصة بهذه البطاقة */}
+      {movementLabel && (
+        <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
+          {movementLabel}
         </div>
       )}
     </div>

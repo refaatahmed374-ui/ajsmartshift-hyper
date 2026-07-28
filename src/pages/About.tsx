@@ -20,7 +20,7 @@ export default function About() {
   const { show } = useToast()
   const {
     status, load: loadLicense,
-    activate, requestActivation, refresh: refreshLicense,
+    requestActivation, refresh: refreshLicense,
   } = useLicense()
   const [tab, setTab] = useState<HubTab>('info')
   const [appVersion, setAppVersion] = useState('')
@@ -31,10 +31,8 @@ export default function About() {
   })
   const [savingBiz, setSavingBiz] = useState(false)
 
-  // ===== التفعيل =====
-  const [activationKey, setActivationKey] = useState('')
-  const [activating,    setActivating]    = useState(false)
-  const [requesting,    setRequesting]    = useState(false)
+  // ===== التفعيل (طلب فقط — لا تفعيل بمفتاح محلي، القرار خادمي حصري) =====
+  const [requesting, setRequesting] = useState(false)
 
   async function loadBiz() {
     const all = await call(api.settings.getAll()) as { key: string; value: string }[]
@@ -93,17 +91,6 @@ export default function About() {
     finally { setRequesting(false) }
   }
 
-  async function handleActivate() {
-    if (!activationKey.trim()) { show('أدخل مفتاح التفعيل', 'warning'); return }
-    setActivating(true)
-    try {
-      const res = await activate(activationKey.trim())
-      if (res.ok) show('تم تفعيل النسخة بنجاح ✓', 'success')
-      else show(res.reason ?? 'فشل التفعيل', 'error')
-    } catch (e) { show((e as Error).message, 'error') }
-    finally { setActivating(false) }
-  }
-
   function copyDeviceId() {
     if (status?.deviceId) {
       navigator.clipboard.writeText(status.deviceId)
@@ -122,8 +109,8 @@ export default function About() {
     ['نوع الترخيص',         status?.tierLabel ?? '—', stateColor],
     ['حالة الترخيص',        stateText, stateColor],
     ['رقم الجهاز',          status?.deviceCode ?? '—'],
-    ['تاريخ التفعيل/البدء', status?.trialStart ?? '—'],
-    ['الأيام المتبقية',     status?.activated ? '∞ (مفعّل)' : `${status?.daysLeft ?? 0} يوم`],
+    ['ينتهي في',            status?.mode === 'subscription' ? (status?.subExpireDate?.slice(0, 10) ?? 'دائم') : (status?.trialEnd ?? '—')],
+    ['الأيام المتبقية',     status?.activated && status?.mode === 'subscription' && !status?.subExpireDate ? '∞ (دائم)' : `${status?.daysLeft ?? 0} يوم`],
     ['قاعدة البيانات',      'SQLite 3.45'],
     ['بيئة التشغيل',        'Electron 29'],
     ['مسار البيانات',       'C:\\ProgramData\\AJ Smart Shift'],
@@ -213,7 +200,7 @@ export default function About() {
                       color:       status.state === 'active' ? '#2ea043' : status.state === 'expired' ? '#f85149' : '#d4a017',
                     }}>
                     {status.state === 'active'
-                      ? (status.mode === 'transition' ? `⏳ فترة انتقالية — ${status.tierLabel}` : `✓ مفعّلة — ${status.tierLabel}`)
+                      ? `✓ مفعّلة — ${status.tierLabel}`
                       : status.state === 'expired'
                         ? (status.reason === 'needsOnline' ? '⚠ يلزم اتصال' : status.reason === 'deactivated' ? '⛔ موقوفة' : '✕ منتهية')
                         : '⏳ تجريبية'}
@@ -227,13 +214,11 @@ export default function About() {
                     {[
                       { label: 'رقم الجهاز',   value: status.deviceCode },
                       { label: 'الباقة',        value: status.tierLabel },
-                      { label: 'نوع الترخيص',   value: status.mode === 'subscription' ? 'اشتراك' : status.mode === 'transition' ? 'انتقالي' : 'تجريبي' },
-                      { label: status.mode === 'subscription' ? 'ينتهي الاشتراك' : status.mode === 'transition' ? 'متبقٍ للترحيل' : 'الأيام المتبقية',
+                      { label: 'نوع الترخيص',   value: status.mode === 'subscription' ? 'اشتراك' : 'تجريبي' },
+                      { label: status.mode === 'subscription' ? 'ينتهي الاشتراك' : 'الأيام المتبقية',
                         value: status.mode === 'subscription'
                           ? (status.subExpireDate ? status.subExpireDate.slice(0, 10) : 'دائم')
-                          : status.mode === 'transition'
-                            ? `${status.transitionDaysLeft} يوم`
-                            : `${status.daysLeft} يوم` },
+                          : `${status.daysLeft} يوم` },
                     ].map(item => (
                       <div key={item.label} className="bg-surface-800 rounded-lg p-2.5 text-center">
                         <div className="text-2xs text-surface-400 mb-1">{item.label}</div>
@@ -254,14 +239,6 @@ export default function About() {
                     </div>
                   )}
 
-                  {status.mode === 'transition' && status.state === 'active' && (
-                    <div className="rounded-lg p-3 text-xs" style={{ background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.3)', color: '#60a5fa' }}>
-                      ⏳ <span className="font-bold">فترة انتقالية</span> — تم تحويل نظام الترخيص إلى اشتراكات.
-                      نسختك تعمل بالكامل لمدة <span className="font-bold">{status.transitionDaysLeft} يوم</span> أخرى.
-                      أرسل طلب التفعيل ليُحوّل جهازك لاشتراك دائم.
-                    </div>
-                  )}
-
                   {status.mode === 'subscription' && status.state === 'active' && (
                     <div className="rounded-lg p-3 text-xs text-success flex items-center gap-2" style={{ background: 'rgba(46,160,67,0.1)', border: '1px solid rgba(46,160,67,0.3)' }}>
                       <Icons.Check size={14} />
@@ -276,18 +253,15 @@ export default function About() {
                         ? '⚠ مرّت أكثر من 7 أيام دون اتصال — يلزم الاتصال بالإنترنت لتأكيد الاشتراك.'
                         : status.reason === 'deactivated'
                           ? '⛔ تم إيقاف هذا الاشتراك. تواصل مع المطوّر لإعادة التفعيل.'
-                          : status.reason === 'transitionEnded'
-                            ? '⏳ انتهت الفترة الانتقالية. أرسل طلب التفعيل لتحويل جهازك لاشتراك.'
-                            : status.reason === 'expired'
-                              ? '✕ انتهى اشتراكك. أرسل طلب تجديد أو تواصل مع المطوّر.'
-                              : '✕ انتهت الفترة التجريبية. أرسل طلب التفعيل للاشتراك.'}
+                          : status.reason === 'expired'
+                            ? '✕ انتهى اشتراكك. أرسل طلب تجديد أو تواصل مع المطوّر.'
+                            : '✕ انتهت الفترة التجريبية. أرسل طلب التفعيل للاشتراك.'}
                     </div>
                   )}
 
                   <div className="border-t border-surface-600 pt-4">
                     <div className="text-xs text-surface-400 mb-3">
-                      للتفعيل/التجديد: أرسل طلباً للمطوّر <span className="font-bold text-white mx-1">أحمد جلال</span>
-                      (يصله فوراً)، أو انسخ رقم الجهاز وفعّل بمفتاح يدوي.
+                      للتفعيل/التجديد: أرسل طلباً للمطوّر <span className="font-bold text-white mx-1">أحمد جلال</span> — سيُفعَّل اشتراكك تلقائياً بعد المراجعة.
                     </div>
                     <div className="flex gap-2 mb-3 flex-wrap">
                       <button onClick={handleRequestActivation} disabled={requesting} className="btn-primary btn-sm">
@@ -298,15 +272,6 @@ export default function About() {
                       </button>
                       <button onClick={() => refreshLicense()} className="btn-ghost btn-sm">
                         <Icons.Refresh size={13} /> تحديث حالة الاشتراك
-                      </button>
-                    </div>
-                    <div className="flex gap-2">
-                      <input className="field flex-1" placeholder="مفتاح يدوي: XXXX-XXXX-XXXX-XXXX"
-                        style={{ fontFamily: 'monospace' }}
-                        value={activationKey}
-                        onChange={e => setActivationKey(e.target.value)} />
-                      <button onClick={handleActivate} disabled={activating} className="btn-ghost btn-sm">
-                        {activating ? 'جاري التفعيل...' : <><Icons.Check size={14} /> تفعيل يدوي</>}
                       </button>
                     </div>
                   </div>

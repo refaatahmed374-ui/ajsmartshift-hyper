@@ -4,7 +4,7 @@ import { fmt, parsePias } from '../lib/format'
 import { useToast } from '../store/toast'
 import { useAuth } from '../store/auth'
 import { useFloatingWindows } from '../store/floatingWindows'
-import { calcFawry, calcCustody, calcFawryWithCommission, calcShiftClosing } from '../../core/engine'
+import { calcFawry, calcCustody, calcShiftClosing } from '../../core/engine'
 import { generateShiftReportPDF } from '../lib/shiftReport'
 import type {
   Shift, Journal, Transaction, ShiftFawry, ShiftCustody,
@@ -61,6 +61,11 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     try { return JSON.parse(localStorage.getItem('aj.shiftMoneyCounter.v1') || '{}') } catch { return {} }
   })
   useEffect(() => { try { localStorage.setItem('aj.shiftMoneyCounter.v1', JSON.stringify(moneyDenoms)) } catch { /* */ } }, [moneyDenoms])
+  // إخفاء العدّاد/الآلة الحاسبة وعرض شرح استخدام الشاشة بدلاً منهما — تفضيل شخصي محفوظ محلياً
+  const [showMoneyTools, setShowMoneyTools] = useState(() => {
+    try { return localStorage.getItem('aj.shiftMoneyTools.visible') !== '0' } catch { return true }
+  })
+  useEffect(() => { try { localStorage.setItem('aj.shiftMoneyTools.visible', showMoneyTools ? '1' : '0') } catch { /* */ } }, [showMoneyTools])
   const [calcExpr, setCalcExpr] = useState('')
   const [calcResult, setCalcResult] = useState<string | null>(null)
   const draftsInitRef = useRef<number | null>(null) // ADR-012 v2 — يمنع تكرار ملء الصفوف الافتراضية عند كل تحميل
@@ -99,7 +104,17 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   }, [])
 
   const fawryRes = useMemo(() => fawry ? calcFawry(fawry) : null, [fawry])
-  const custodyRes = useMemo(() => custody ? calcCustody(custody) : null, [custody])
+  // بطلب العميل: "عهدة منصرفة" تُحسب تلقائيًا (تجميع كل بنود الشيفت بخلية الدفع "إدارة") — نفس القيمة تُستخدم أيضًا في "مصروفات الصندوق" و"عهدة متبقية" فتبقى الثلاثة متطابقة دومًا
+  // ملاحظة: هذا الحساب مكرَّر عمداً هنا (بدل استخدام dSum/filledDrafts المعرَّفتين أسفل بعد حارس "if (!shift) return") —
+  // useMemo/useEffect يجب أن يُستدعَيا قبل أي return شرطي مهما كان الأمر (قاعدة الـHooks)، فلا يصح نقلهما لأسفل
+  const mgmtOut = txs.filter(t => t.payMethod === 'management').reduce((s, t) => s + t.amountOut, 0)
+    + drafts.filter(d => d.description.trim() && d.amount && d.payMethod === 'management').reduce((s, d) => s + parsePias(d.amount), 0) // شامل المسودة، للعرض الفوري
+  // نُخزّن فقط إجمالي البنود المحفوظة فعليًا (بلا المسودة) في shift_custody.management_paid — لتقارير خارج هذه الشاشة (لوحة التحكم/PDF)، بلا كتابة على كل ضغطة مفتاح في مسودة لسه غير محفوظة
+  const mgmtOutSaved = txs.filter(t => t.payMethod === 'management').reduce((s, t) => s + t.amountOut, 0)
+  const custodyRes = useMemo(() => custody ? calcCustody({ ...custody, managementPaid: mgmtOut }) : null, [custody, mgmtOut])
+  useEffect(() => {
+    if (custody && custody.managementPaid !== mgmtOutSaved) saveCustody('managementPaid', String(mgmtOutSaved / 100))
+  }, [mgmtOutSaved, custody?.managementPaid])
 
   async function saveFawry(field: keyof ShiftFawry, egp: string) {
     if (!fawry) return
@@ -331,8 +346,6 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const deliveryOpsCount = txs.filter(t => t.subCategoryId === deliverySubId).length
     + drafts.filter(d => d.subCategoryId === deliverySubId && d.description.trim() && d.amount).length
   const amt = (t: Transaction) => t.amountIn + t.amountOut
-  const mgmtOut = txs.filter(t => t.payMethod === 'management').reduce((s, t) => s + t.amountOut, 0)
-    + dSum(d => d.payMethod === 'management')                                                          // مصروفات الصندوق
   // مبيعات فيزا/آجل — من التصنيف الفرعي (لا من الدفع)
   const visaSubId = subs.find(s => s.name === 'مبيعات فيزا')?.id ?? -1
   const creditSubId = subs.find(s => s.name === 'مبيعات آجل')?.id ?? -1
@@ -360,8 +373,10 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const cashoutCommissionPct = visaTx > 0 ? (cashoutFawryCommission / visaTx) * 100 : 0
   const cashoutAccent = cashoutDiff < 0 ? '#ef4444' : '#22c55e'
   const basicAirSum = (fawryRes?.basicSales ?? 0) + (fawryRes?.airSales ?? 0)
-  // v2.34.1 — نسبة الربحية تُضاف مباشرة على "مبيعات أساسي + إير تايم" المحسوبة (بدل إدخال يدوي منفصل "قبل العمولة")
-  const fawryWithCommission = calcFawryWithCommission(basicAirSum, fawry?.commissionPct ?? 0)
+  // بطلب العميل: "مبيعات فوري + الربحية" أصبحت خلية يدوية يدخلها العميل نفسه بدل حسابها تلقائيًا من النسبة%
+  const fawryWithCommission = fawry?.fawryTotalManual ?? 0
+  // بطلب العميل — النسبة المئوية لفوري = مبيعات أساسي+إيرتايم ÷ مبيعات فوري+الربحية × 100 (محسوبة تلقائيًا)
+  const fawryPct = fawryWithCommission > 0 ? (basicAirSum / fawryWithCommission) * 100 : 0
   // v2.31.3 — معادلات جديدة من العميل
   const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((s, t) => s + amt(t), 0)
     + dSum(d => d.mainCategoryId === collectMainId)                                                    // التحصيل (وارد)
@@ -505,10 +520,17 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
               <FIn label="من فوري للإير تايم" value={fawry?.fawryToAir ?? 0} onSave={v => saveFawry('fawryToAir', v)} />
               {/* خلية المبيعات — مميّزة دائمًا بالأزرق (تمييز احترافي مقصود، بخلاف باقي الأرقام المحايدة) */}
               <FCalc label="مبيعات أساسي + إير تايم" value={basicAirSum} accent="#3b82f6" box />
-              {/* v2.34.1 — أُلغي إدخال "مبيعات فوري قبل العمولة" اليدوي (تكرار لـ"مبيعات أساسي + إير تايم" المحسوبة أصلاً)؛
-                  نسبة الربحية تُضاف الآن مباشرة على القيمة المحسوبة */}
-              <FIn label="النسبة المئوية لربحية فوري" value={fawry?.commissionPct ?? 0} onSave={v => saveFawry('commissionPct', v)} suffix="%" />
-              <FCalc label="مبيعات فوري + الربحية" value={fawryWithCommission} accent={G.fawry} box />
+              <FIn label="مبيعات فوري + الربحية" value={fawryWithCommission} onSave={v => saveFawry('fawryTotalManual', v)} />
+              {/* بطلب العميل — محسوبة تلقائيًا: مبيعات أساسي+إيرتايم ÷ مبيعات فوري+الربحية × 100، وليست إدخالاً يدويًا */}
+              <tr style={{ background: '#3b82f61a', borderBottom: '1px solid var(--inner-border)' }}>
+                <td className="px-3 py-1.5" style={{ color: '#3b82f6', fontWeight: 700, fontSize: 13 }}>النسبة المئوية لفوري <span style={{ fontSize: 9 }}>🔒</span></td>
+                <td className="px-2.5 py-1.5 text-left">
+                  <span className="inline-block w-28 text-left tabular-nums font-bold" style={{
+                    background: '#3b82f612', border: '1px solid #3b82f655', borderRadius: 6,
+                    padding: '3px 7px', color: '#3b82f6', fontSize: 13,
+                  }}>{fawryPct.toFixed(2)}%</span>
+                </td>
+              </tr>
               {/* نسبة/قيمة عمولة فوري الفعلية على عمليات الفيزا والكاش أوت (محسوبة تلقائياً من فرق تسليم/استلام كاش أوت، وليست إدخالاً يدوياً) */}
               <tr style={{ background: `${cashoutAccent}1a`, borderBottom: '1px solid var(--inner-border)' }}>
                 <td className="px-3 py-1.5" style={{ color: cashoutAccent, fontWeight: 700, fontSize: 13 }}>النسبة المئوية لعمولة فوري <span style={{ fontSize: 9 }}>🔒</span></td>
@@ -547,15 +569,15 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
             <SummaryGroup title="🧾 جزء الكاشير" color="#3b82f6">
               <CCardIn label="نقدية الكاشير" value={shift.cashierRemaining} onSave={v => saveClose('cashierRemaining', v)} accent="#f87171" />
               <CCard label="مصروفات الكاشير" value={fmt(cashierExpenses)} />
-              <CCard label="إجمالي المصروفات" value={fmt(totalExpenses)} accent="#f87171" />
+              {/* v2.35.1 — أُعيدت تسميتها (كانت "إجمالي المصروفات" — تشابه مع رقم مختلف بنفس الاسم في لوحة التحكم والتقارير) لتصف تكوينها الفعلي: آجل+فيزا (لم تدخل كاش) + مصروفات الكاشير النقدية */}
+              <CCard label="آجل + فيزا + مصروفات الكاشير" value={fmt(totalExpenses)} accent="#f87171" />
               <CCard label="تحصيل" value={fmt(collections)} />
             </SummaryGroup>
 
             <SummaryGroup title="🤝 جزء العهدة" color="#a78bfa">
               <FundRow label="✎ عهدة مستلمة" value={custody?.addFromFund ?? 0} onSave={v => saveCustody('addFromFund', v)} editable />
-              {/* v2.34.7 — كانت مربوطة خطأً بـ mgmtOut (مصروفات الصندوق العامة)؛ الصحيح "عهدة منصرفة" = custody.managementPaid
-                  نفس الحقل اللي "عهدة متبقية" أسفلها بتحسب منه، وإلا القيمتان بيطلعوا من مصدرين مختلفين لا يتطابقان */}
-              <FundRow label="✎ عهدة منصرفة" value={custody?.managementPaid ?? 0} onSave={v => saveCustody('managementPaid', v)} editable />
+              {/* بطلب العميل: تُحسب تلقائيًا (تجميع بنود الشيفت بخلية الدفع "إدارة") بدل الإدخال اليدوي — القيمة نفسها المستخدَمة في "عهدة متبقية" أدناه فتبقى متطابقة دومًا */}
+              <FundRow label="عهدة منصرفة" value={mgmtOut} />
               <FundRow label="عهدة متبقية" value={custodyRes?.remaining ?? 0} accent={G.sum} />
             </SummaryGroup>
 
@@ -585,6 +607,17 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
 
         {/* عدّاد فلوس مصري + آلة حاسبة — منقولان من مسودة حسابات إلى الفراغ يسار ملخّص الشيفت (فوق: العدّاد، تحته: الآلة الحاسبة) */}
         <div className="flex flex-col gap-2.5 min-h-0 overflow-auto" style={{ gridColumn: 'span 2' }}>
+          {/* بطلب العميل — زر لإخفاء العدّاد/الآلة الحاسبة واستبدالهما بشرح استخدام الشاشة */}
+          <div className="flex items-center justify-end flex-shrink-0">
+            <button onClick={() => setShowMoneyTools(v => !v)}
+              className="text-2xs px-2.5 py-1 rounded-md flex items-center gap-1"
+              style={{ background: 'var(--app-bg-solid, rgba(255,255,255,0.05))', color: 'var(--txt-3)', border: '1px solid var(--inner-border)' }}>
+              {showMoneyTools ? <>🙈 إخفاء العدّاد والآلة الحاسبة</> : <>👁 إظهار العدّاد والآلة الحاسبة</>}
+            </button>
+          </div>
+
+          {showMoneyTools ? (
+          <>
           <div className="rounded-2xl p-3 flex-shrink-0" style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)' }}>
             <div className="flex items-center justify-between mb-2 pb-1.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
               <div className="flex items-center gap-1.5">
@@ -647,6 +680,10 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
               .calc-btn:hover { filter: brightness(1.15); }
             `}</style>
           </div>
+          </>
+          ) : (
+            <ShiftHelpPanel />
+          )}
 
           {/* نوتة ملاحظات — يسجّل فيها العميل ملاحظاته، مرتبطة فعليًا بالشيفت (shift.note) */}
           <ShiftNoteBox note={shift.note} onSave={saveNote} />
@@ -793,6 +830,44 @@ function CashierName({ name, onSave }: { name: string; onSave: (n: string) => vo
     placeholder="اسم الكاشير" className="font-bold" style={{ ...inp, width: 110 }} />
 }
 // v2.34.15 — ملاحظات الشيفت (مرتبطة فعليًا بالشيفت في قاعدة البيانات — shift.note — وليست حفظاً محلياً مؤقتاً)
+// بطلب العميل — تظهر بدل العدّاد/الآلة الحاسبة عند إخفائهما: شرح استخدام الشاشة وتحذيرات ومنطق معادلة الإغلاق
+function ShiftHelpPanel() {
+  const Section = ({ icon, title, color, children }: { icon: string; title: string; color: string; children: React.ReactNode }) => (
+    <div className="rounded-2xl p-3" style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)' }}>
+      <div className="flex items-center gap-1.5 mb-2 pb-1.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
+        <span style={{ fontSize: 14 }}>{icon}</span>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color }}>{title}</span>
+      </div>
+      <div style={{ fontSize: 12, lineHeight: 1.9, color: 'var(--txt-2)' }}>{children}</div>
+    </div>
+  )
+  return (
+    <div className="flex flex-col gap-2.5">
+      <Section icon="🧮" title="معادلة إغلاق الشيفت" color="#38bdf8">
+        <div className="rounded-lg p-2 mb-2 text-center font-bold tabular-nums" style={{ background: 'rgba(56,189,248,0.08)', border: '1px solid rgba(56,189,248,0.25)', color: 'var(--txt-1)', fontSize: 12 }}>
+          النتيجة = (نقدية الكاشير + مصروفات الكاشير − التحصيل) − مبيعات POS
+        </div>
+        <div>🟢 <b style={{ color: '#22c55e' }}>موجب (أوفر)</b> — الكاشير سلّم نقدية أكثر من المتوقع.</div>
+        <div>🔴 <b style={{ color: '#ef4444' }}>سالب (عجز)</b> — ناقص من نقدية الكاشير عن المتوقع.</div>
+        <div>⚪ <b>صفر (مطابق)</b> — الحسابات متوازنة تمامًا.</div>
+      </Section>
+
+      <Section icon="⚠️" title="تحذيرات مهمة قبل الإغلاق" color="#f59e0b">
+        <div>• لا تُقفل الشيفت قبل عدّ النقدية الفعلية في الدرج جيدًا — أي رقم تقديري يظهر كعجز أو أوفر وهمي.</div>
+        <div>• أي خطأ في خانتَي "نقدية الكاشير" أو "مبيعات POS" ينعكس فورًا ومباشرة على نتيجة الشيفت.</div>
+        <div>• بيانات ماكينة فوري (استلام/تسليم) تدخل في حساب إجمالي المبيعات — راجعها من شاشة الماكينة نفسها قبل الحفظ.</div>
+        <div>• "عهدة منصرفة" تُحسب تلقائيًا من بنود اليومية التي خلية الدفع فيها "إدارة" — تأكد من اختيار طريقة الدفع الصحيحة لكل بند وإلا اختل رقم العهدة.</div>
+      </Section>
+
+      <Section icon="🧭" title="الأجزاء المعقّدة — باختصار" color="#a78bfa">
+        <div><b style={{ color: '#a78bfa' }}>📱 ماكينة فوري:</b> استلام/تسليم = حركة الرصيد داخل الماكينة، وليست مبيعات مباشرة. المبيعات الفعلية = الفرق بينهما بعد إضافة التحويلات.</div>
+        <div className="mt-1.5"><b style={{ color: '#fbbf24' }}>🤝 العهدة:</b> "مستلمة" = ما أضيف من صندوق سابق، "منصرفة" = ما صُرف عبر "إدارة"، "متبقية" = الفرق بينهما تلقائيًا.</div>
+        <div className="mt-1.5"><b style={{ color: '#fbbf24' }}>🏦 الصندوق:</b> رصيد آخر الصندوق = رصيد أوله + الوارد إليه − المصروف منه، ويُستخدم كنقطة بداية للشيفت التالي.</div>
+      </Section>
+    </div>
+  )
+}
+
 function ShiftNoteBox({ note, onSave }: { note: string; onSave: (n: string) => void }) {
   const [v, setV] = useState(note)
   useEffect(() => { setV(note) }, [note])

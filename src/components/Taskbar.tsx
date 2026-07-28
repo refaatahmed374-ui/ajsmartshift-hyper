@@ -57,8 +57,6 @@ export default function Taskbar({ current, onNavigate }: { current: string; onNa
   let subDays: number | null = null, subColor = '#2ea043'
   if (license?.mode === 'subscription' && license.subExpireDate) {
     subDays = Math.max(0, Math.ceil((new Date(license.subExpireDate).getTime() - Date.now()) / DAY))
-  } else if (license?.mode === 'transition') {
-    subDays = license.transitionDaysLeft
   } else if (license?.state === 'trial') {
     subDays = license.daysLeft
   }

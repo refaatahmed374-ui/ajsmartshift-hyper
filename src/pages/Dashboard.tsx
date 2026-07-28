@@ -3,7 +3,7 @@ import { api, call } from '../lib/api'
 import Icons from '../components/Icon'
 import { MiniCombo, MiniDonut } from '../components/MiniChart'
 import { fmt, fmtDate, shiftTypeLabel } from '../lib/format'
-import { calcFawryWithCommission, calcShiftClosing } from '../../core/engine'
+import { calcShiftClosing } from '../../core/engine'
 import type { Shift, Transaction, ShiftCustody, Setting } from '../../core/types'
 
 // ═══════════════════════════════════════════════════════════
@@ -13,7 +13,7 @@ import type { Shift, Transaction, ShiftCustody, Setting } from '../../core/types
 // ═══════════════════════════════════════════════════════════
 
 type FilterMode = 'all' | 'year' | 'month' | 'day'
-type FawryClose = { programSales: number; commissionPct: number }
+type FawryClose = { programSales: number; fawryTotalManual: number }
 const MONTHS = ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر']
 const PANEL_H = 460 // ارتفاع موحّد (بكسل) لتحليل المبيعات + اتجاه آخر 12 شهر + جدول الشيفتات — تمرير داخلي عند تجاوز المحتوى له
 const ROW2_H = 220 // ارتفاع موحّد (بكسل) لعداد الأوفر/العجز + الرسم البياني + مؤشر المبيعات (الصف الثاني)
@@ -61,7 +61,7 @@ export default function Dashboard() {
       const ids = shifts.map(s => s.id)
       const [allTxs, fawryRows, custodyRows, settingsRows, customers, suppliers] = await Promise.all([
         call(api.tx.getByShiftIds(ids)).catch(() => []),
-        call<{ shiftId: number; programSales: number; commissionPct: number }[]>(api.fawry.allClosing()).catch(() => []),
+        call<{ shiftId: number; programSales: number; fawryTotalManual: number }[]>(api.fawry.allClosing()).catch(() => []),
         call<ShiftCustody[]>(api.custody.getByShiftIds(ids)).catch(() => []),
         call<Setting[]>(api.settings.getAll()).catch(() => []),
         call<unknown[]>(api.party.list('customer')).catch(() => []),
@@ -69,7 +69,7 @@ export default function Dashboard() {
       ])
       setAllTxs(allTxs as Transaction[])
       const fm: Record<number, FawryClose> = {}
-      for (const r of fawryRows) fm[r.shiftId] = { programSales: r.programSales, commissionPct: r.commissionPct }
+      for (const r of fawryRows) fm[r.shiftId] = { programSales: r.programSales, fawryTotalManual: r.fawryTotalManual }
       setFawryMap(fm)
       const cm: Record<number, ShiftCustody> = {}
       for (const c of custodyRows) cm[c.shiftId] = c
@@ -100,7 +100,9 @@ export default function Dashboard() {
     return false // الكل: لا مقارنة
   }
 
-  const fawryWith = (s: Shift) => { const f = fawryMap[s.id]; return f ? calcFawryWithCommission(f.programSales, f.commissionPct) : 0 }
+  // بطلب العميل: "مبيعات فوري + الربحية" يدخلها العميل يدويًا لكل شيفت — نقرأها مباشرة، ونرجع لـ programSales
+  // فقط للشيفتات القديمة المستورَدة من الإكسل (لأن fawryTotalManual لا وجود له فيها)
+  const fawryWith = (s: Shift) => { const f = fawryMap[s.id]; return f ? (f.fawryTotalManual || f.programSales) : 0 }
   // v2.34.32 — شيفت "open" لسه ما اتقفلش: posSales/cashierRemaining لسه صفر افتراضي (لم يُدخَلا بعد)
   // بينما بنود اليومية المُسجَّلة فعلاً أثناءه حقيقية → resultOf عليه بيطلع "أوفر" وهمي كبير (مصروفات/تحصيل حقيقيين ناقص صفر مبيعات).
   // لازم يُستبعَد من كل إحصائيات الأوفر/العجز والمبيعات لحد ما يتقفل فعليًا (review/approved) وتبقى أرقامه حقيقية.
@@ -149,7 +151,6 @@ export default function Dashboard() {
     const visaCount = countBySub('مبيعات فيزا')
     const creditCount = countBySub('مبيعات آجل')
     const meatSales = inBySub('مبيعات لحوم')
-    const fawryCommissionProfit = cur.reduce((a, s) => { const f = fawryMap[s.id]; return a + (f ? Math.round(f.programSales * f.commissionPct / 10000) : 0) }, 0)
     const cashierCash = cur.reduce((a, s) => a + (s.cashierRemaining ?? 0), 0)
 
     let surplus = 0, deficit = 0, balanced = 0, net = 0
@@ -194,7 +195,7 @@ export default function Dashboard() {
 
     return {
       cur, sales, posOnly, fawryOnly, prevSales, purchases, meatPurchases, expenses, wages,
-      collections, visa, credit, delivery, deliveryCount, visaCount, creditCount, meatSales, fawryCommissionProfit, cashierCash,
+      collections, visa, credit, delivery, deliveryCount, visaCount, creditCount, meatSales, cashierCash,
       surplus, deficit, balanced, net, best, worst, payDist, itemsCount: tx.length,
       custodyAdd, custodyPaid, cashierPayVal, cashierNet,
       purchaseInvoiceCount, avgInvoice, maxInvoice,
@@ -381,7 +382,8 @@ export default function Dashboard() {
 
             <TopAccountCard title="مؤشرات مباشرة" icon={<Icons.Reports size={12} />} color="#8b5cf6">
               <Stat label="إجمالي الإيرادات" value={`${fmt(M.totalRevenue)} ج`} color="#22c55e" />
-              <Stat label="إجمالي المصروفات" value={`${fmt(M.totalExpensesAll)} ج`} color="#ef4444" />
+              {/* v2.35.1 — أُعيدت تسميتها (كانت "إجمالي المصروفات" — رقم أوسع يجمع مشتريات+مصروفات+رواتب، يختلف عن "المصروفات" الأضيق في شاشة التقارير) */}
+              <Stat label="إجمالي التكاليف" value={`${fmt(M.totalExpensesAll)} ج`} color="#ef4444" />
               <Stat label="صافي الربح" value={`${fmt(M.netProfit)} ج`} color={M.netProfit >= 0 ? '#22c55e' : '#ef4444'} />
               <Stat label="نسبة الربحية" value={`${M.profitMarginPct.toFixed(1)}%`} color="#8b5cf6" />
             </TopAccountCard>
@@ -591,7 +593,7 @@ function MiniCount({ label, value, color }: { label: string; value: number; colo
 /** بطاقة تحليل المبيعات — دونات + جدول احترافي بدل البطاقات المتفرقة (العمود الأيمن) */
 function SalesAnalysis({ M }: { M: {
   posOnly: number; fawryOnly: number; sales: number; visa: number
-  meatSales: number; delivery: number; fawryCommissionProfit: number; itemsCount: number
+  meatSales: number; delivery: number; itemsCount: number
 } }) {
   const total = M.sales || 0
   const rows: { label: string; value: number; color: string; icon: string; pct: number | null }[] = [
@@ -600,7 +602,6 @@ function SalesAnalysis({ M }: { M: {
     { label: 'مبيعات فيزا',   value: M.visa,                  color: '#10b981', icon: '💳', pct: total > 0 ? (M.visa / total) * 100 : 0 },
     { label: 'مبيعات لحوم',   value: M.meatSales,             color: '#ef4444', icon: '🥩', pct: total > 0 ? (M.meatSales / total) * 100 : 0 },
     { label: 'مبيعات دليفري', value: M.delivery,              color: '#f97316', icon: '🛵', pct: total > 0 ? (M.delivery / total) * 100 : 0 },
-    { label: 'ربحية فوري (عمولة كاش اوت)', value: M.fawryCommissionProfit, color: '#8b5cf6', icon: '💰', pct: null },
   ]
   return (
     <div className="card p-2 flex flex-col" style={{ height: PANEL_H }}>

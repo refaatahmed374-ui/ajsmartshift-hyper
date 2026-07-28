@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { createNotification } from './notifications'
 
 // صف حركة الخزينة — قد يكون شيفت أو تسوية (راتب/سحب)
 export interface TreasuryRow {
@@ -254,17 +255,6 @@ export function deletePayrollReport(db: Database.Database, id: number): boolean 
 }
 
 // ═══ تقارير التقفيل الشهري ═══
-// v2.34.4 — بعد الاعتماد تتجمّد نتائج الشهر (Snapshot) ولا يمكن الكتابة فوقها إلا بعد فك الاعتماد صراحة
-export function saveMonthlyClose(db: Database.Database, month: string, dataJson: string): number {
-  const existing = db.prepare(`SELECT status FROM monthly_close_reports WHERE month = ?`).get(month) as { status: string } | undefined
-  if (existing?.status === 'approved')
-    throw new Error(`شهر ${month} مُعتمَد بالفعل — يجب فك اعتماد التقفيل الشهري أولاً قبل إعادة الحفظ`)
-  const res = db.prepare(`
-    INSERT INTO monthly_close_reports (month, data_json) VALUES (?, ?)
-    ON CONFLICT(month) DO UPDATE SET data_json=excluded.data_json, created_at=datetime('now')
-  `).run(month, dataJson)
-  return res.lastInsertRowid as number
-}
 
 export function listMonthlyCloses(db: Database.Database): unknown[] {
   return db.prepare(`SELECT * FROM monthly_close_reports ORDER BY month DESC`).all()
@@ -283,6 +273,11 @@ export function approveMonthClose(db: Database.Database, month: string, dataJson
       data_json=excluded.data_json, status='approved', approved_by=excluded.approved_by,
       approved_at=datetime('now'), unapproved_at=NULL, created_at=datetime('now')
   `).run(month, dataJson, userId)
+  createNotification(db, {
+    type: 'info',
+    title: 'تم اعتماد التقفيل الشهري',
+    message: `تم اعتماد تقفيل شهر ${month} — النتائج مجمَّدة الآن ولا يمكن تعديل قيود هذا الشهر`,
+  })
 }
 
 // فك اعتماد التقفيل الشهري — يُعيد الشهر لوضع "مفتوح" ليسمح بتعديل القيود وإعادة الاحتساب

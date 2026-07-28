@@ -27,7 +27,6 @@ const api = {
     getActive:    ()                                      => ipcRenderer.invoke('shifts:getActive'),
     updateStatus:  (id: number, s: string, uid: number)  => ipcRenderer.invoke('shifts:updateStatus', id, s, uid),
     updateNote:    (id: number, note: string)            => ipcRenderer.invoke('shifts:updateNote', id, note),
-    updateOpening: (id: number, bal: number)             => ipcRenderer.invoke('shifts:updateOpening', id, bal),
     updateCloseInputs: (id: number, data: unknown)       => ipcRenderer.invoke('shifts:updateCloseInputs', id, data),
     updateMeta:        (id: number, data: unknown)       => ipcRenderer.invoke('shifts:updateMeta', id, data),
     delete:        (id: number)                          => ipcRenderer.invoke('shifts:delete', id),
@@ -37,7 +36,6 @@ const api = {
   // فوري
   fawry: {
     get:    (shiftId: number)          => ipcRenderer.invoke('fawry:get', shiftId),
-    closingMonth: (month: string)      => ipcRenderer.invoke('fawry:closingMonth', month),
     allClosing:   ()                   => ipcRenderer.invoke('fawry:allClosing'),
     update: (shiftId: number, data: unknown) => ipcRenderer.invoke('fawry:update', shiftId, data),
   },
@@ -95,15 +93,15 @@ const api = {
     update:             (id: number, data: unknown)     => ipcRenderer.invoke('emp:update', id, data),
     setAttendance:      (data: unknown)                 => ipcRenderer.invoke('emp:setAttendance', data),
     setPenalty:         (empId: number, date: string, penaltyDays: number) => ipcRenderer.invoke('emp:setPenalty', empId, date, penaltyDays),
+    setBonus:           (empId: number, date: string, bonusAmount: number) => ipcRenderer.invoke('emp:setBonus', empId, date, bonusAmount),
     deleteAttendance:   (id: number)                    => ipcRenderer.invoke('emp:deleteAttendance', id),
     getAttendanceMonth: (eid: number, month: string)    => ipcRenderer.invoke('emp:getAttendanceMonth', eid, month),
     financials:         (month: string)                 => ipcRenderer.invoke('emp:financials', month),
   },
 
-  // الترخيص
+  // الترخيص (Server Authoritative — لا تفعيل بمفتاح محلي بعد الآن)
   license: {
     status:   ()             => ipcRenderer.invoke('license:status'),
-    activate: (key: string)  => ipcRenderer.invoke('license:activate', key),
     refresh:  ()             => ipcRenderer.invoke('license:refresh'),
     requestActivation: (opts: { customerName?: string; phone?: string; plan?: string; note?: string }) =>
                                ipcRenderer.invoke('license:requestActivation', opts),
@@ -114,14 +112,6 @@ const api = {
     getUser: (userId: number)                              => ipcRenderer.invoke('perms:getUser', userId),
     getAll:  ()                                            => ipcRenderer.invoke('perms:getAll'),
     set:     (uid: number, perm: string, granted: boolean) => ipcRenderer.invoke('perms:set', uid, perm, granted),
-    init:    (uid: number, role: string)                   => ipcRenderer.invoke('perms:init', uid, role),
-  },
-
-  // سجل التعديلات
-  audit: {
-    log:   (entry: unknown)  => ipcRenderer.invoke('audit:log', entry),
-    get:   (opts?: unknown)  => ipcRenderer.invoke('audit:get', opts),
-    count: (opts?: unknown)  => ipcRenderer.invoke('audit:count', opts),
   },
 
   // التنبيهات
@@ -150,7 +140,6 @@ const api = {
     delete: (id: number) => ipcRenderer.invoke('payroll:delete', id),
   },
   monthlyClose: {
-    save:      (month: string, dataJson: string) => ipcRenderer.invoke('monthlyClose:save', month, dataJson),
     list:      () => ipcRenderer.invoke('monthlyClose:list'),
     get:       (month: string) => ipcRenderer.invoke('monthlyClose:get', month),
     approve:   (month: string, dataJson: string, userId: number) => ipcRenderer.invoke('monthlyClose:approve', month, dataJson, userId),
@@ -159,7 +148,6 @@ const api = {
 
   // الإحصائيات
   stats: {
-    overview:   (month: string) => ipcRenderer.invoke('stats:overview', month),
     financials: (month: string) => ipcRenderer.invoke('stats:financials', month),
   },
 
@@ -213,7 +201,6 @@ const api = {
 
   // نسخ احتياطي
   backup: {
-    now:        () => ipcRenderer.invoke('backup:now'),
     openFolder: () => ipcRenderer.invoke('backup:openFolder'),
     list:       () => ipcRenderer.invoke('backup:list'),
     create:     () => ipcRenderer.invoke('backup:create'),

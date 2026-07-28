@@ -25,8 +25,6 @@ const FAWRY_LABELS: Record<string, keyof RawFawry> = {
   [nv('تسليم اير تايم')]: 'airDeliver',
   [nv('استلام كاش اوت')]: 'cashoutReceive',
   [nv('تسليم كاش اوت')]: 'cashoutDeliver',
-  [nv('اضافة كاش اوت')]: 'cashoutAdd',
-  [nv('خصم كاش اوت')]: 'cashoutDiscount',
   [nv('من فوري للاساسي')]: 'fawryToBasic',
   [nv('من فوري للايرتايم')]: 'fawryToAir',
   [nv('من كاش للرئيسي')]: 'cashoutToBasic',
