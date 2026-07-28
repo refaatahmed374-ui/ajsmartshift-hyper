@@ -53,6 +53,8 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const [drafts, setDrafts] = useState<TxDraft[]>([])
   const [fundPos, setFundPos] = useState<{ before: number; cashIn: number; mgmtOut: number; after: number } | null>(null)
   const [closeDlg, setCloseDlg] = useState(false)
+  // بطلب العميل — منع اعتماد الشيفت لو فيه بيانات ناقصة، بدل السماح بالتجاوز
+  const [missingItems, setMissingItems] = useState<string[] | null>(null)
   // v2.34.10 — فصل بصري فقط: تبويب فرعي (ماكينة فوري + ملخّص الشيفت) منفصل عن العمليات اليومية لإتاحة مساحة أوسع لتسجيل القيود
   // لا علاقة له بأي منطق حساب أو استيراد — مجرد إخفاء/إظهار عمودين من الشبكة الحالية بنفس المقاسات
   const [subView, setSubView] = useState<'daily' | 'fawry'>('daily')
@@ -159,8 +161,40 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     try { await call(api.shifts.updateNote(shiftId, note)); onChanged?.() }
     catch (e) { toast.show((e as Error).message, 'error') }
   }
+  // بطلب العميل — فحص اكتمال البيانات قبل الاعتماد: بنود اليومية + ماكينة فوري + ملخّص الشيفت
+  function checkMissingItems(): string[] {
+    const missing: string[] = []
+
+    // بنود اليومية
+    const hasAnyItem = txs.length > 0 || filledDrafts.length > 0
+    if (!hasAnyItem) missing.push('بنود اليومية — لم يُسجَّل أي بند بعد (تبويب البنود اليومية)')
+    const partial = drafts.find(d =>
+      (d.description.trim() || d.amount) &&
+      !(d.description.trim() && d.amount && d.mainCategoryId && d.payMethod)
+    )
+    if (partial) missing.push(`بند غير مكتمل في اليومية: "${partial.description || '—'}" — أكمِل البيان/المبلغ/التصنيف/طريقة الدفع أو امسحه (تبويب البنود اليومية)`)
+
+    // ماكينة فوري
+    const fawryBaseFilled = (fawry?.basicReceive ?? 0) > 0 || (fawry?.basicDeliver ?? 0) > 0
+      || (fawry?.airReceive ?? 0) > 0 || (fawry?.airDeliver ?? 0) > 0
+      || (fawry?.cashoutReceive ?? 0) > 0 || (fawry?.cashoutDeliver ?? 0) > 0
+    if (!fawryBaseFilled) missing.push('بيانات ماكينة فوري — لم تُدخَل أي قراءة استلام/تسليم بعد (تبويب ماكينة فوري)')
+    else if (basicAirSum > 0 && fawryWithCommission === 0) missing.push('"مبيعات فوري + الربحية" لم تُدخَل بعد (تبويب ماكينة فوري)')
+
+    // ملخّص الشيفت
+    if ((shift?.posSales ?? 0) === 0) missing.push('"مبيعات POS" لم تُدخَل بعد (ملخّص الشيفت)')
+    if ((shift?.cashierRemaining ?? 0) === 0) missing.push('"نقدية الكاشير" المتبقية لم تُدخَل بعد (ملخّص الشيفت)')
+    // بطلب العميل — "عهدة مستلمة" هي المبلغ المُسلَّم لمسؤول المشتريات أثناء الشيفت، ولازم تُسجَّل دائمًا
+    // لمطابقتها لاحقًا مع "عهدة منصرفة" (بنود الدفع "إدارة") فتُعرف "عهدة متبقية" معه بدقة
+    if ((custody?.addFromFund ?? 0) === 0) missing.push('"عهدة مستلمة" لم تُدخَل بعد — المبلغ المُسلَّم لمسؤول المشتريات (جزء العهدة)')
+
+    return missing
+  }
+
   async function approveShift() {
     if (!user) return
+    const missing = checkMissingItems()
+    if (missing.length > 0) { setMissingItems(missing); return }
     if (!confirm('اعتماد وإغلاق الشيفت؟ (البيانات محفوظة بالفعل)')) return
     try { await call(api.shifts.updateStatus(shiftId, 'approved', user.id)); await load(); onChanged?.(); toast.show('تم اعتماد الشيفت', 'success') }
     catch (e) { toast.show((e as Error).message, 'error') }
@@ -339,8 +373,9 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const advanceSubId  = subs.find(s => s.name === 'سلفة موظف')?.id ?? -1
   const isAdvanceRow = (mainCatId: number, subCatId: number) => mainCatId === advanceMainId && subCatId === advanceSubId
   // v2.34.17 — عدد عمليات البيع = فرق رقمي البون (إحصائي فقط، لا يدخل في أي حساب)
+  // إصلاح: كانت +1 بالخطأ — "أول بون" قراءة العدّاد قبل أول عملية (كالعدّاد الميكانيكي) وليست رقم أول عملية نفسها
   const saleOpsCount = (fawry?.firstVoucher ?? 0) > 0 && (fawry?.lastVoucher ?? 0) > 0
-    ? Math.max(0, (fawry!.lastVoucher - fawry!.firstVoucher) + 1) : 0
+    ? Math.max(0, fawry!.lastVoucher - fawry!.firstVoucher) : 0
   // عدد عمليات التوصيل = عدد بنود اليومية (محفوظ + قيد الكتابة) بتصنيف فرعي "مبيعات توصيل" — إحصائي فقط
   const deliverySubId = subs.find(s => s.name === 'مبيعات توصيل')?.id ?? -1
   const deliveryOpsCount = txs.filter(t => t.subCategoryId === deliverySubId).length
@@ -375,8 +410,8 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const basicAirSum = (fawryRes?.basicSales ?? 0) + (fawryRes?.airSales ?? 0)
   // بطلب العميل: "مبيعات فوري + الربحية" أصبحت خلية يدوية يدخلها العميل نفسه بدل حسابها تلقائيًا من النسبة%
   const fawryWithCommission = fawry?.fawryTotalManual ?? 0
-  // بطلب العميل — النسبة المئوية لفوري = مبيعات أساسي+إيرتايم ÷ مبيعات فوري+الربحية × 100 (محسوبة تلقائيًا)
-  const fawryPct = fawryWithCommission > 0 ? (basicAirSum / fawryWithCommission) * 100 : 0
+  // بطلب العميل (تصحيح) — النسبة المئوية لفوري = القيمة اليدوية المُدخَلة (مبيعات فوري+الربحية) ÷ مبيعات أساسي+إيرتايم × 100
+  const fawryPct = basicAirSum > 0 ? (fawryWithCommission / basicAirSum) * 100 : 0
   // v2.31.3 — معادلات جديدة من العميل
   const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((s, t) => s + amt(t), 0)
     + dSum(d => d.mainCategoryId === collectMainId)                                                    // التحصيل (وارد)
@@ -531,16 +566,8 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
                   }}>{fawryPct.toFixed(2)}%</span>
                 </td>
               </tr>
-              {/* نسبة/قيمة عمولة فوري الفعلية على عمليات الفيزا والكاش أوت (محسوبة تلقائياً من فرق تسليم/استلام كاش أوت، وليست إدخالاً يدوياً) */}
-              <tr style={{ background: `${cashoutAccent}1a`, borderBottom: '1px solid var(--inner-border)' }}>
-                <td className="px-3 py-1.5" style={{ color: cashoutAccent, fontWeight: 700, fontSize: 13 }}>النسبة المئوية لعمولة فوري <span style={{ fontSize: 9 }}>🔒</span></td>
-                <td className="px-2.5 py-1.5 text-left">
-                  <span className="inline-block w-28 text-left tabular-nums font-bold" style={{
-                    background: `${cashoutAccent}12`, border: `1px solid ${cashoutAccent}55`, borderRadius: 6,
-                    padding: '3px 7px', color: cashoutAccent, fontSize: 13,
-                  }}>{cashoutCommissionPct.toFixed(2)}%</span>
-                </td>
-              </tr>
+              {/* بطلب العميل — حُذفت خلية "النسبة المئوية لعمولة فوري" لتكرارها ظاهريًا مع "النسبة المئوية لفوري" أعلاها؛
+                  نسبة عمولة الكاش أوت لا تزال محسوبة (cashoutCommissionPct) ومعروضة في عدّاد FawryCommissionGauge أسفل الجدول */}
               <FCalc label="قيمة عمولة فوري (كاش أوت)" value={cashoutFawryCommission} accent={cashoutAccent} box />
             </tbody></table>
           </div>
@@ -721,6 +748,31 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
           <TBtn onClick={delShift} icon="❌" label="حذف الشيفت" danger />
         </div>
       </div>
+
+      {/* بطلب العميل — منع اعتماد الشيفت لو فيه بيانات ناقصة */}
+      {missingItems && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }} onClick={() => setMissingItems(null)}>
+          <div className="card p-5" style={{ width: '100%', maxWidth: 480, border: '1.5px solid #f59e0b' }} onClick={e => e.stopPropagation()}>
+            <div className="flex items-center gap-2.5 mb-3">
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(245,158,11,0.18)', color: '#f59e0b' }}>⚠️</div>
+              <div>
+                <div className="font-black text-sm" style={{ color: '#f59e0b' }}>لا يمكن اعتماد الشيفت — بيانات ناقصة</div>
+                <div className="text-2xs" style={{ color: 'var(--txt-3)' }}>أكمِل البيانات التالية أولاً ثم أعد المحاولة</div>
+              </div>
+            </div>
+            <ul className="space-y-1.5 mb-4">
+              {missingItems.map((m, i) => (
+                <li key={i} className="flex items-start gap-2 text-xs rounded-lg p-2" style={{ background: 'rgba(245,158,11,0.08)', color: 'var(--txt-1)' }}>
+                  <span style={{ color: '#f59e0b', flexShrink: 0 }}>●</span>{m}
+                </li>
+              ))}
+            </ul>
+            <button onClick={() => setMissingItems(null)} className="w-full text-sm font-bold px-4 py-2 rounded-lg text-white" style={{ background: '#f59e0b' }}>
+              حسنًا، سأكمل البيانات
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* حوار إغلاق الصفحة */}
       {closeDlg && (
