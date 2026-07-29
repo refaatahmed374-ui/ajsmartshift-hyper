@@ -658,6 +658,16 @@ const MIGRATIONS = [
 
   // مكافأة الموظف — بجوار الجزاء في تبويب الحضور، لا تؤثر على أيام الحضور، تدخل في معادلة الراتب المستحق
   `ALTER TABLE attendance ADD COLUMN bonus_amount INTEGER NOT NULL DEFAULT 0`,
+
+  // ربط بنود "سلفة موظف" المستوردة من Excel باسم موظف محدد (بالاسم بعد التطبيع) — يُحفظ القرار
+  // لإعادة الاستخدام في الاستيرادات القادمة لنفس الاسم، بنفس نمط import_cashier_map.
+  `CREATE TABLE IF NOT EXISTS import_employee_map (
+     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+     excel_name  TEXT NOT NULL UNIQUE,
+     employee_id INTEGER NOT NULL REFERENCES employees(id),
+     created_by  INTEGER,
+     created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+   )`,
 ]
 
 let _db: Database.Database | null = null
@@ -781,7 +791,7 @@ const BUSINESS_TABLES = [
   'employee_attendance', 'attendance', 'treasury_adjustments',
   'payroll_reports', 'monthly_close_reports', 'sync_queue',
   'notifications', 'party_ledger', 'customers', 'suppliers', 'employees',
-  'smart_labels', 'unknown_labels', 'import_history',
+  'smart_labels', 'unknown_labels', 'import_history', 'import_employee_map',
 ]
 // جداول الهوية/الإعداد (تُمحى فقط في "إعادة الضبط الكاملة")
 // ملاحظة: قواعد تعيين الاستيراد تُمسح مع الفئات/المستخدمين لأنها تشير إليها بالمعرّف.

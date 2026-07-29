@@ -107,11 +107,15 @@ export const useShift = create<ShiftState>((set, get) => ({
   },
 
   refreshAll: async (shiftId) => {
-    await Promise.all([
+    const [, , , shift] = await Promise.all([
       get().loadTransactions(shiftId),
       get().loadFawry(shiftId),
       get().loadCustody(shiftId),
+      call(api.shifts.getById(shiftId)),
     ])
+    // الشيفت لم يعد مفتوحاً (اعتماد/تغيير حالة) — لم يعد "الشيفت النشط"، فتُفرَغ حتى تظهر شاشة "لا يوجد شيفت مفتوح"
+    // (بدون هذا كانت شاشة العمليات اليومية تفضل عارضة نفس الشيفت المعتمَد من غير أي تحديث بعد الضغط على "اعتماد الشيفت")
+    set({ activeShift: shift && shift.status === 'open' ? shift : null })
   },
 
   clear: () => set({

@@ -131,3 +131,19 @@ export function resolveCashier(db: Database, normName: string): number | null {
   const row = db.prepare(`SELECT user_id FROM import_cashier_map WHERE excel_name=?`).get(normName) as { user_id: number } | undefined
   return row ? row.user_id : null
 }
+
+/** تعيين اسم موظف مطبَّع (من بند "سلفة موظف") → معرّف موظف (من قاعدة التعيين المحفوظة). */
+export function resolveEmployeeByName(db: Database, normName: string): number | null {
+  if (!normName) return null
+  const row = db.prepare(`SELECT employee_id FROM import_employee_map WHERE excel_name=?`).get(normName) as { employee_id: number } | undefined
+  return row ? row.employee_id : null
+}
+
+/** معرّف التصنيف الفرعي "سلفة موظف" تحت "مصروفات" — البنود المصنَّفة عليه هي وحدها المؤهَّلة للربط بموظف. */
+export function getSalaryAdvanceSubCategoryId(db: Database): number | null {
+  const row = db.prepare(`
+    SELECT sc.id FROM sub_categories sc JOIN main_categories mc ON mc.id = sc.main_category_id
+    WHERE sc.name = 'سلفة موظف' AND mc.name = 'مصروفات'
+  `).get() as { id: number } | undefined
+  return row ? row.id : null
+}

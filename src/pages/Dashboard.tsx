@@ -44,12 +44,23 @@ export default function Dashboard() {
   // v2.33.0 — رصيد الصندوق الحقيقي (نقاط الارتكاز) لمدى الفترة المعروضة — بديل حساب "fund.prev" القديم المعطَّل
   const [treasuryPos, setTreasuryPos] = useState({ opening: 0, incoming: 0, outgoing: 0, closing: 0 })
   useEffect(() => {
-    let from: string, toExclusive: string
-    if (filterMode === 'all') { from = '0000-01-01'; toExclusive = '9999-12-31' }
-    else if (filterMode === 'year') { from = `${filterYear}-01-01`; toExclusive = `${filterYear + 1}-01-01` }
-    else if (filterMode === 'month') { from = `${filterYear}-${String(filterMonth).padStart(2, '0')}-01`; toExclusive = new Date(filterYear, filterMonth, 1).toISOString().slice(0, 10) }
-    else { from = filterDay; const d = new Date(filterDay); d.setDate(d.getDate() + 1); toExclusive = d.toISOString().slice(0, 10) }
-    call(api.treasury.position(from, toExclusive)).then(setTreasuryPos as (d: unknown) => void).catch(() => {})
+    async function run() {
+      // فلتر "الكل" — نفس مصدر شاشة "حسابات الصندوق" بالضبط (تراكمي من أول شيفت في البرنامج، بلا نقاط ارتكاز وسيطة)
+      // بدل getTreasuryPosition('0000-01-01', ...) القديمة اللي كانت بتاخد نقطة ارتكاز قديمة مُرحَّلة تلقائياً
+      // من إعداد عام سابق (settings.treasury.opening) لا علاقة لها بأول شيفت فعلي — فتختلف عن شاشة حسابات الصندوق.
+      if (filterMode === 'all') {
+        const d = await call(api.treasury.data('all')) as { prevBalance: number; monthIn: number; monthOut: number; movements: { running: number }[] }
+        const closing = d.movements.length ? d.movements[d.movements.length - 1].running : d.prevBalance
+        setTreasuryPos({ opening: d.prevBalance, incoming: d.monthIn, outgoing: d.monthOut, closing })
+        return
+      }
+      let from: string, toExclusive: string
+      if (filterMode === 'year') { from = `${filterYear}-01-01`; toExclusive = `${filterYear + 1}-01-01` }
+      else if (filterMode === 'month') { from = `${filterYear}-${String(filterMonth).padStart(2, '0')}-01`; toExclusive = new Date(filterYear, filterMonth, 1).toISOString().slice(0, 10) }
+      else { from = filterDay; const d = new Date(filterDay); d.setDate(d.getDate() + 1); toExclusive = d.toISOString().slice(0, 10) }
+      setTreasuryPos(await call(api.treasury.position(from, toExclusive)) as typeof treasuryPos)
+    }
+    run().catch(() => {})
   }, [filterMode, filterYear, filterMonth, filterDay])
 
   async function loadAll() {
@@ -121,7 +132,9 @@ export default function Dashboard() {
     const cashierExpenses = tx.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
     return calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
   }
-  const saleOf = (s: Shift) => (s.posSales ?? 0) + fawryWith(s)
+  // بطلب العميل — "مبيعات" في لوحة المعلومات = مبيعات POS فقط (يطابق "مبيعات POS" في سجل اليوميات)،
+  // بلا فوري — مبيعات فوري لها مؤشرها الخاص (fawryOnly) منفصلاً في "تحليل المبيعات"/"مؤشر المبيعات".
+  const saleOf = (s: Shift) => s.posSales ?? 0
 
   // ── تجميع الفترة الحالية ──
   const M = useMemo(() => {
@@ -135,7 +148,9 @@ export default function Dashboard() {
 
     const posOnly = cur.reduce((a, s) => a + (s.posSales ?? 0), 0)
     const fawryOnly = cur.reduce((a, s) => a + fawryWith(s), 0)
-    const sales = posOnly + fawryOnly
+    // بطلب العميل — "مبيعات" = مبيعات POS فقط (يطابق "مبيعات POS" في سجل اليوميات) في كل لوحة المعلومات.
+    // مبيعات فوري (fawryOnly) تبقى متاحة كمؤشر منفصل (مؤشر المبيعات) بلا دخولها في إجمالي المبيعات/الأرباح.
+    const sales = posOnly
     const prevSales = allShifts.filter(s => inPrev(s.date) && isCounted(s)).reduce((a, s) => a + saleOf(s), 0)
     const purchases = outByMain('مشتريات')
     const meatPurchases = outByMainSub('مشتريات', 'مشتريات اللحوم')
@@ -276,7 +291,8 @@ export default function Dashboard() {
     } catch (e) { console.error(e) }
   }
 
-  const chartData = twelveMonths.map(m => ({ label: m.label.split(' ')[0].slice(0, 3), in: m.sales, out: m.purchases + m.expenses, net: m.profit }))
+  // بطلب العميل — الرسم من اليمين لليسار (يناير يبدأ من اليمين)، فنعكس ترتيب المصفوفة (الرسم نفسه LTR داخلياً بصرف النظر عن اتجاه الصفحة)
+  const chartData = [...twelveMonths].reverse().map(m => ({ label: m.label.split(' ')[0].slice(0, 3), in: m.sales, out: m.purchases + m.expenses, net: m.profit }))
 
   return (
     <div className="flex-1 overflow-y-auto p-2 space-y-2">
@@ -336,8 +352,9 @@ export default function Dashboard() {
             </div>
           )}
 
-          {/* ═══ نُقلت أعلى البطاقات: حالة الأوفر/العجز + اتجاه المبيعات/المصروفات/الأرباح + مؤشر المبيعات (بنفس نسب الأعمدة الأصلية) ═══ */}
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.3fr_1.7fr] gap-2 items-start">
+          {/* ═══ نُقلت أعلى البطاقات: حالة الأوفر/العجز + اتجاه المبيعات/المصروفات/الأرباح + مؤشر المبيعات ═══ */}
+          {/* بطلب العميل — تصغير عمود "حالة الأوفر/العجز" (كان الأعرض 1.7fr) لصالح عمود الرسم البياني عشان أسماء الشهور تظهر كاملة */}
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.7fr_1.3fr] gap-2 items-start">
             <SalesDonut M={M} />
             <div className="card p-2 flex flex-col" style={{ height: ROW2_H }}>
               <CardTitle icon={<Icons.Reports size={13} />} title="المبيعات والمصروفات والأرباح — آخر 12 شهر" color="#3b82f6" />

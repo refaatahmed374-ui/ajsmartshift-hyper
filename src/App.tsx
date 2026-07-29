@@ -71,10 +71,16 @@ export default function App() {
 
   // ADR-012 v2 — تنقّل من مكوّنات عميقة (زر «إغلاق الصفحة» في الورقة الموحّدة)
   useEffect(() => {
-    const h = (e: Event) => openPageTab((e as CustomEvent).detail as Page)
-    window.addEventListener('app:navigate', h)
-    return () => window.removeEventListener('app:navigate', h)
-  }, [])
+    const hNav = (e: Event) => openPageTab((e as CustomEvent).detail as Page)
+    // زر «إغلاق الصفحة» في الورقة الموحّدة يغلق التبويب الحالي فعلياً (كزر ✕ في شريط التبويبات) بدل مجرد التنقّل للوحة المعلومات
+    const hClose = () => closePageTab(page)
+    window.addEventListener('app:navigate', hNav)
+    window.addEventListener('app:closeCurrentTab', hClose)
+    return () => {
+      window.removeEventListener('app:navigate', hNav)
+      window.removeEventListener('app:closeCurrentTab', hClose)
+    }
+  }, [page])
 
   useEffect(() => {
     if (user) { loadActiveShift(); loadCategories(); loadPageAccess(user.id) }

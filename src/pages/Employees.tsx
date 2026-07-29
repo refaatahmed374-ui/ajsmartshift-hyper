@@ -3,10 +3,21 @@ import { api, call } from '../lib/api'
 import { useToast } from '../store/toast'
 import Modal from '../components/Modal'
 import Icons from '../components/Icon'
-import { fmt, parsePias, todayISO, nowTime } from '../lib/format'
+import { fmt, parsePias, todayISO } from '../lib/format'
 import type { Employee, Attendance, AttendanceStatus, EmployeeFinancials } from '../../core/types'
 
 type Tab = 'list' | 'attendance' | 'financial'
+
+// اليومية المستوردة هي المرجع الأساسي لسلف الموظفين — اسم ظهر في بند "مصروفات ← سلفة موظف" ولسه ملوش موظف مربوط
+interface UnlinkedAdvanceName {
+  normName: string
+  rawName: string
+  count: number
+  totalAmountPiastres: number
+  suggestedEmployeeId: number | null
+  suggestedName: string | null
+  suggestedScore: number
+}
 
 const STATUS_CFG: Record<AttendanceStatus, { label: string; color: string }> = {
   present: { label: 'حضور',  color: '#2ea043' },
@@ -19,8 +30,57 @@ export default function Employees() {
 
   const [tab,        setTab]        = useState<Tab>('list')
   const [employees,  setEmployees]  = useState<Employee[]>([])
-  const [selected,   setSelected]   = useState<Employee | null>(null)
   const [month,      setMonth]      = useState(() => new Date().toISOString().slice(0, 7))
+
+  // ===== بوابة تسجيل إلزامية — أسماء "سلفة موظف" من اليومية المستوردة ولسه ملهاش موظف مربوط =====
+  // null = لسه بيتحمّل (ما نوريش الصفحة العادية لحد ما نتأكد)، [] = مفيش حاجة معلَّقة
+  const [unlinkedAdvances, setUnlinkedAdvances] = useState<UnlinkedAdvanceName[] | null>(null)
+  const [gateIndex,     setGateIndex]     = useState(0)
+  const [gateMode,      setGateMode]      = useState<'existing' | 'new'>('new')
+  const [gateEmpId,     setGateEmpId]     = useState(0)
+  const [gateSaving,    setGateSaving]    = useState(false)
+  const [gateForm, setGateForm] = useState({
+    name: '', nationalId: '', phone: '', monthlySalary: '', workHours: '10',
+    startDate: todayISO(), status: 'active' as Employee['status'],
+  })
+
+  async function loadUnlinkedAdvances() {
+    setUnlinkedAdvances(await call<UnlinkedAdvanceName[]>(api.emp.getUnlinkedAdvances()))
+  }
+  useEffect(() => { loadUnlinkedAdvances() }, [])
+
+  // تعبئة نموذج البوابة تلقائياً عند الانتقال لاسم معلَّق جديد — تخمين تلقائي لموظف موجود لو موجود
+  useEffect(() => {
+    const item = unlinkedAdvances?.[gateIndex]
+    if (!item) return
+    if (item.suggestedEmployeeId) { setGateMode('existing'); setGateEmpId(item.suggestedEmployeeId) }
+    else { setGateMode('new'); setGateEmpId(0) }
+    setGateForm({ name: item.rawName, nationalId: '', phone: '', monthlySalary: '', workHours: '10', startDate: todayISO(), status: 'active' })
+  }, [gateIndex, unlinkedAdvances])
+
+  async function submitGateEntry() {
+    const item = unlinkedAdvances?.[gateIndex]
+    if (!item) return
+    if (gateMode === 'existing' && !gateEmpId) { show('اختر موظفاً موجوداً', 'warning'); return }
+    if (gateMode === 'new' && !gateForm.name.trim()) { show('أدخل اسم الموظف', 'warning'); return }
+    setGateSaving(true)
+    try {
+      const payload = gateMode === 'existing'
+        ? { normName: item.normName, employeeId: gateEmpId }
+        : { normName: item.normName, newEmployee: {
+            name: gateForm.name, nationalId: gateForm.nationalId, phone: gateForm.phone,
+            monthlySalary: parsePias(gateForm.monthlySalary || '0'),
+            workHours: Math.round((Number(gateForm.workHours) || 10) * 100),
+            startDate: gateForm.startDate, status: gateForm.status,
+          } }
+      const res = await call<{ employeeId: number; linkedCount: number; monthsFilled: string[] }>(api.emp.registerFromAdvance(payload))
+      show(`✓ ${item.rawName} — تم ربط ${res.linkedCount} بند${res.monthsFilled.length ? ` وتعبئة حضور ${res.monthsFilled.length} شهر تلقائياً` : ''}`, 'success')
+      await loadEmployees()
+      await loadUnlinkedAdvances()
+      setGateIndex(0)
+    } catch (e) { show((e as Error).message, 'error') }
+    finally { setGateSaving(false) }
+  }
 
   // ===== مودال إضافة/تعديل =====
   const [addModal,   setAddModal]   = useState(false)
@@ -29,13 +89,6 @@ export default function Employees() {
     name: '', nationalId: '', phone: '',
     monthlySalary: '', workHours: '8',
     startDate: todayISO(), status: 'active' as Employee['status'],
-  })
-
-  // ===== الحضور =====
-  const [attendance, setAttendance] = useState<Attendance[]>([])
-  const [attForm, setAttForm] = useState({
-    date: todayISO(), status: 'present' as AttendanceStatus,
-    checkIn: '08:00', checkOut: nowTime(),
   })
 
   // ===== v2.27.0: تبويب الحضور الفرعي + بيانات الإدخال لكل موظف + بحث السجل =====
@@ -200,23 +253,14 @@ export default function Employees() {
   async function loadEmployees() {
     setEmployees(await call(api.emp.getAll()))
   }
-  async function loadAttendance(emp: Employee) {
-    setAttendance(await call(api.emp.getAttendanceMonth(emp.id, month)) as Attendance[])
-  }
   async function loadFinancials() {
     setFinancials(await call(api.emp.financials(month)) as EmployeeFinancials[])
   }
 
   useEffect(() => { loadEmployees() }, [])
   useEffect(() => {
-    if (selected && tab === 'attendance') loadAttendance(selected)
     if (tab === 'financial') loadFinancials()
-  }, [tab, month, selected?.id])
-
-  function selectEmployee(emp: Employee) {
-    setSelected(emp)
-    if (tab === 'attendance') loadAttendance(emp)
-  }
+  }, [tab, month])
 
   // ===== إضافة/تعديل موظف =====
   function openAdd() {
@@ -253,25 +297,9 @@ export default function Employees() {
     } catch (e) { show((e as Error).message, 'error') }
   }
 
-  // ===== حفظ حضور =====
-  async function handleSaveAttendance() {
-    if (!selected) { show('اختر موظفاً أولاً', 'warning'); return }
-    try {
-      await call(api.emp.setAttendance({
-        employeeId: selected.id,
-        date: attForm.date,
-        status: attForm.status,
-        checkIn:  attForm.status === 'present' ? attForm.checkIn  : null,
-        checkOut: attForm.status === 'present' ? attForm.checkOut : null,
-      }))
-      show('تم حفظ الحضور ✓', 'success')
-      await loadAttendance(selected)
-    } catch (e) { show((e as Error).message, 'error') }
-  }
   async function handleDeleteAtt(id: number) {
     try {
       await call(api.emp.deleteAttendance(id))
-      if (selected) await loadAttendance(selected)
     } catch (e) { show((e as Error).message, 'error') }
   }
 
@@ -295,8 +323,9 @@ export default function Employees() {
     return `${h} س ${m} د`
   }
 
+  // الافتراضي صباحي (9ص–7م، 10 ساعات) — نفس توقيت الشيفت الصباحي المستخدَم في تعبئة الحضور التلقائية من الاستيراد
   function getRowData(empId: number) {
-    return rowsData[empId] ?? { status: 'present' as AttendanceStatus, checkIn: '08:00', checkOut: nowTime() }
+    return rowsData[empId] ?? { status: 'present' as AttendanceStatus, checkIn: '09:00', checkOut: '19:00' }
   }
   function setRowData(empId: number, patch: Partial<{ status: AttendanceStatus; checkIn: string; checkOut: string }>) {
     setRowsData(prev => ({ ...prev, [empId]: { ...getRowData(empId), ...patch } }))
@@ -361,6 +390,129 @@ export default function Employees() {
     { id: 'attendance', label: 'الحضور والانصراف',       icon: <Icons.Clock size={15} /> },
     { id: 'financial',  label: 'الحسابات المالية',       icon: <Icons.Reports size={15} /> },
   ]
+
+  // ===== بوابة إلزامية: لا نعرض أي شيء من القسم قبل ما نتأكد مفيش أسماء سلف معلَّقة =====
+  if (unlinkedAdvances === null) {
+    return <div className="flex-1 flex items-center justify-center" style={{ color: 'var(--txt-3)' }}>جارٍ التحميل…</div>
+  }
+  if (unlinkedAdvances.length > 0) {
+    const item = unlinkedAdvances[gateIndex] ?? unlinkedAdvances[0]
+    return (
+      <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.78)', backdropFilter: 'blur(6px)' }}>
+        <div className="card flex flex-col" style={{ width: '95vw', maxWidth: 560, maxHeight: '90vh', padding: 0, overflow: 'hidden' }}>
+          {/* رأس */}
+          <div className="flex items-center gap-3 px-5 py-4 flex-shrink-0" style={{ borderBottom: '1px solid var(--inner-border)', background: 'rgba(212,160,23,0.08)' }}>
+            <div className="w-11 h-11 rounded-xl flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(212,160,23,0.18)', color: '#d4a017' }}>
+              <Icons.Employees size={20} />
+            </div>
+            <div className="flex-1">
+              <div className="font-black" style={{ color: 'var(--txt-1)', fontSize: 15 }}>تسجيل موظفين من اليومية المستوردة</div>
+              <div style={{ color: 'var(--txt-3)', fontSize: 12 }}>
+                موظف {gateIndex + 1} من {unlinkedAdvances.length} — سجّل كل موظف قبل ما تقدر تدخل باقي القسم
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 space-y-4">
+            <div className="rounded-xl p-3" style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)' }}>
+              <div className="font-bold" style={{ color: 'var(--txt-1)', fontSize: 15 }}>{item.rawName}</div>
+              <div style={{ color: 'var(--txt-3)', fontSize: 12 }}>
+                {item.count} بند "سلفة موظف" في اليومية — إجمالي {fmt(item.totalAmountPiastres)} ج
+              </div>
+              {item.suggestedName && item.suggestedScore < 1 && (
+                <div style={{ color: '#fbbf24', fontSize: 11.5 }}>تخمين تلقائي: أقرب اسم موجود «{item.suggestedName}»</div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => setGateMode('existing')}
+                className="py-2 rounded-xl font-bold text-sm transition-all border-2"
+                style={gateMode === 'existing'
+                  ? { background: '#d4a017', borderColor: '#d4a017', color: '#1a1a1a' }
+                  : { background: '#d4a01712', borderColor: '#d4a01755', color: '#d4a017' }}>
+                موظف موجود
+              </button>
+              <button onClick={() => setGateMode('new')}
+                className="py-2 rounded-xl font-bold text-sm transition-all border-2"
+                style={gateMode === 'new'
+                  ? { background: '#d4a017', borderColor: '#d4a017', color: '#1a1a1a' }
+                  : { background: '#d4a01712', borderColor: '#d4a01755', color: '#d4a017' }}>
+                موظف جديد
+              </button>
+            </div>
+
+            {gateMode === 'existing' ? (
+              <div>
+                <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>اختر الموظف</label>
+                <select className="field" value={gateEmpId} onChange={e => setGateEmpId(Number(e.target.value))}>
+                  <option value={0}>— اختر —</option>
+                  {employees.map(emp => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+                </select>
+                {employees.length === 0 && (
+                  <div className="text-xs mt-1" style={{ color: 'var(--txt-3)' }}>لا يوجد موظفون مسجَّلون بعد — استخدم "موظف جديد".</div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>الاسم *</label>
+                  <input className="field" value={gateForm.name} onChange={e => setGateForm(f => ({ ...f, name: e.target.value }))} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>الراتب الشهري (ج)</label>
+                    <input className="field" type="number" min={0} value={gateForm.monthlySalary}
+                      onChange={e => setGateForm(f => ({ ...f, monthlySalary: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>ساعات العمل اليومية</label>
+                    <input className="field" type="number" min={1} step="0.5" value={gateForm.workHours}
+                      onChange={e => setGateForm(f => ({ ...f, workHours: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>الهاتف</label>
+                    <input className="field" value={gateForm.phone} onChange={e => setGateForm(f => ({ ...f, phone: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>رقم الهوية</label>
+                    <input className="field" value={gateForm.nationalId} onChange={e => setGateForm(f => ({ ...f, nationalId: e.target.value }))} />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>تاريخ التعيين</label>
+                    <input className="field" type="date" value={gateForm.startDate}
+                      onChange={e => setGateForm(f => ({ ...f, startDate: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-xs mb-1" style={{ color: 'var(--txt-2)' }}>الحالة</label>
+                    <select className="field" value={gateForm.status}
+                      onChange={e => setGateForm(f => ({ ...f, status: e.target.value as Employee['status'] }))}>
+                      <option value="active">نشط</option>
+                      <option value="inactive">غير نشط</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-lg p-2.5 text-2xs" style={{ background: 'var(--inner-bg)', color: 'var(--txt-3)', lineHeight: 1.7 }}>
+              💡 بعد الحفظ، هتتربط كل بنود "سلفة موظف" بهذا الاسم تلقائياً (من كل الأشهر المستورَدة)، وهيتسجَّل حضوره تلقائياً
+              بعدد الساعات دي طول الشهر (الأشهر) اللي فيها سلف، ما لم يكن عنده حضور فعلي مسجَّل بالفعل.
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 px-5 py-3 flex-shrink-0" style={{ borderTop: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
+            <button onClick={submitGateEntry} disabled={gateSaving} className="btn-primary" style={{ fontSize: 13, padding: '8px 22px' }}>
+              {gateSaving ? <><Icons.Refresh size={13} className="animate-spin" /> جارٍ الحفظ...</> : <><Icons.Check size={14} /> حفظ والتالي</>}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -522,6 +674,19 @@ export default function Employees() {
                             </div>
                           </td>
                           <td className="td">
+                            {/* اختصار توقيت الشيفت — نفس توقيتات "سجل حضور الموظفين" (صباحي 9ص–7م / مسائي 5م–3ف) */}
+                            <div className="flex items-center gap-1 mb-1">
+                              <button type="button" disabled={d.status !== 'present'}
+                                onClick={() => setRowData(emp.id, { checkIn: '09:00', checkOut: '19:00' })}
+                                className="px-1.5 py-0.5 rounded text-2xs font-bold" style={{ background: 'rgba(59,130,246,0.12)', color: 'var(--accent)' }}>
+                                🌅 صباحي
+                              </button>
+                              <button type="button" disabled={d.status !== 'present'}
+                                onClick={() => setRowData(emp.id, { checkIn: '17:00', checkOut: '03:00' })}
+                                className="px-1.5 py-0.5 rounded text-2xs font-bold" style={{ background: 'rgba(139,92,246,0.12)', color: '#8b5cf6' }}>
+                                🌙 مسائي
+                              </button>
+                            </div>
                             <input className="field text-xs" type="time"
                               value={d.checkIn}
                               disabled={d.status !== 'present'}

@@ -16,16 +16,13 @@ export interface TreasuryRow {
 }
 
 export interface TreasuryData {
-  opening:        number   // رصيد نقطة الارتكاز المعتمدة لهذا الشهر (آخر نقطة ارتكاز بتاريخ ≤ بداية الشهر)
-  openingDate:    string   // تاريخ تلك النقطة (لعرضه في الواجهة)
-  incomingAll:    number   // المضاف للخزينة منذ آخر نقطة ارتكاز مطلقاً = Σ نقدية الكاشير
-  outgoingAll:    number   // المنصرف من الإدارة منذ آخر نقطة ارتكاز مطلقاً = Σ بنود إدارة + Σ تسويات
-  currentBalance: number   // رصيد الصندوق الحالي = آخر نقطة ارتكاز + incomingAll − outgoingAll
-  prevBalance:    number   // الرصيد قبل بداية الشهر المعروض
-  shiftsCount:    number   // عدد حركات الشهر المعروض
-  monthIn:        number   // وارد الشهر المعروض
-  monthOut:       number   // منصرف الشهر المعروض (إدارة + تسويات)
-  movements:      TreasuryRow[]   // حركات الشهر (شيفتات + تسويات) مع الرصيد المتراكم
+  opening:        number   // رصيد نقطة الارتكاز المعتمدة لبداية الفترة المعروضة — لتعبئة نموذج التعديل فقط
+  prevBalance:    number   // الرصيد قبل بداية الفترة المعروضة (= رصيد أول الفترة). مع month='all' هذا هو رصيد الصندوق قبل أول شيفت في البرنامج على الإطلاق.
+  shiftsCount:    number   // عدد حركات الفترة المعروضة
+  monthIn:        number   // وارد الفترة المعروضة
+  monthOut:       number   // منصرف الفترة المعروضة (إدارة + تسويات)
+  movements:      TreasuryRow[]   // حركات الفترة (شيفتات + تسويات) مع الرصيد المتراكم
+  firstShiftDate: string | null   // تاريخ أول شيفت مسجَّل في البرنامج على الإطلاق (بلا اعتماد على الفترة المعروضة) — لعرضه بجانب رصيد أول الفترة في وضع "الكل"
 }
 
 export interface TreasuryCheckpoint {
@@ -70,45 +67,47 @@ const MGMT_BY_SHIFT = `
 `
 const STATUSES = `('open','review','approved')`
 
+// بطلب العميل — month='all' يعني "كل الفترات": نفس المعادلات بالضبط، لكن بلا حدود شهر — من أول شيفت في البرنامج
+// على الإطلاق إلى آخر شيفت. بهذا تصبح المعادلات موحَّدة 100% بين وضع "شهر محدد" ووضع "الكل"، بلا أي منطق مضاعف.
 export function getTreasuryData(db: Database.Database, month: string): TreasuryData {
-  const monthStart = `${month}-01`
-
-  // آخر نقطة ارتكاز مطلقاً (لإجماليات "كل الفترات") وآخر نقطة قبل بداية الشهر المعروض (لرصيد الشهر)
-  const cpLatest = checkpointBefore(db, '9999-12-31')
-  const cpMonth = checkpointBefore(db, monthStart)
-
+  const isAll = month === 'all'
   const one = (sql: string, ...p: unknown[]) => (db.prepare(sql).get(...p) as { t: number }).t
 
-  // ===== الإجماليات منذ آخر نقطة ارتكاز مطلقاً =====
-  const incAll = one(`SELECT COALESCE(SUM(cashier_remaining),0) AS t FROM shifts WHERE status IN ${STATUSES} AND date >= ?`, cpLatest.date)
-  const mgmtAll = one(`SELECT COALESCE(SUM(t.amount_out),0) AS t FROM transactions t JOIN shifts s ON s.id=t.shift_id WHERE t.pay_method='management' AND s.status IN ${STATUSES} AND s.date >= ?`, cpLatest.date)
-  let adjAll = 0, adjPrev = 0
+  // أول شيفت مسجَّل في البرنامج على الإطلاق — أساس وضع "الكل"، ومعروض دائماً بجانب "رصيد أول الفترة" في هذا الوضع
+  const firstShift = db.prepare(`SELECT MIN(date) AS d FROM shifts WHERE status IN ${STATUSES}`).get() as { d: string | null }
+  const firstShiftDate = firstShift.d
+
+  const monthStart = isAll ? (firstShiftDate ?? '0000-01-01') : `${month}-01`
+  const dateLike    = isAll ? '%' : `${month}%`
+
+  // آخر نقطة ارتكاز قبل بداية الفترة المعروضة
+  const cpMonth = checkpointBefore(db, monthStart)
+
+  let adjPrev = 0
   try {
-    adjAll  = one(`SELECT COALESCE(SUM(amount),0) AS t FROM treasury_adjustments WHERE date >= ?`, cpLatest.date)
     adjPrev = one(`SELECT COALESCE(SUM(amount),0) AS t FROM treasury_adjustments WHERE date >= ? AND date < ?`, cpMonth.date, monthStart)
   } catch { /* الجدول قد لا يكون موجوداً */ }
-  const outAll = mgmtAll + adjAll
 
-  // ===== الرصيد قبل بداية الشهر المعروض (منذ آخر نقطة ارتكاز قبل هذا الشهر فقط) =====
+  // ===== الرصيد قبل بداية الفترة المعروضة (منذ آخر نقطة ارتكاز قبلها فقط) =====
   const incPrev = one(`SELECT COALESCE(SUM(cashier_remaining),0) AS t FROM shifts WHERE status IN ${STATUSES} AND date >= ? AND date < ?`, cpMonth.date, monthStart)
   const mgmtPrev = one(`SELECT COALESCE(SUM(t.amount_out),0) AS t FROM transactions t JOIN shifts s ON s.id=t.shift_id WHERE t.pay_method='management' AND s.status IN ${STATUSES} AND s.date >= ? AND s.date < ?`, cpMonth.date, monthStart)
   const prevBalance = cpMonth.amount + incPrev - mgmtPrev - adjPrev
 
-  // ===== حركات الشهر: الشيفتات + التسويات =====
+  // ===== حركات الفترة: الشيفتات + التسويات =====
   const shifts = db.prepare(`
     SELECT id, monthly_shift_num AS num, date, cashier_name AS cashier,
            cashier_remaining AS cashIn, status
     FROM shifts WHERE date LIKE ? AND status IN ${STATUSES}
-  `).all(`${month}%`) as { id: number; num: number; date: string; cashier: string; cashIn: number; status: string }[]
+  `).all(dateLike) as { id: number; num: number; date: string; cashier: string; cashIn: number; status: string }[]
 
   let adjustments: { id: number; date: string; description: string; type: string; amount: number }[] = []
   try {
     adjustments = db.prepare(`
       SELECT id, date, description, type, amount FROM treasury_adjustments WHERE date LIKE ?
-    `).all(`${month}%`) as typeof adjustments
+    `).all(dateLike) as typeof adjustments
   } catch { /* */ }
-  
-  // جلب كل مصروفات الإدارة للشهر مرة واحدة لتجنب N+1
+
+  // جلب كل مصروفات الإدارة للفترة مرة واحدة لتجنب N+1
   const mgmtOutByShiftId = new Map<number, number>()
   try {
     const mgmtRows = db.prepare(`
@@ -116,7 +115,7 @@ export function getTreasuryData(db: Database.Database, month: string): TreasuryD
       FROM shifts s JOIN transactions t ON s.id = t.shift_id
       WHERE s.date LIKE ? AND t.pay_method = 'management' AND s.status IN ${STATUSES}
       GROUP BY s.id
-    `).all(`${month}%`) as { shift_id: number; total: number }[]
+    `).all(dateLike) as { shift_id: number; total: number }[]
     mgmtRows.forEach(r => mgmtOutByShiftId.set(r.shift_id, r.total))
   } catch { /* */ }
 
@@ -138,12 +137,12 @@ export function getTreasuryData(db: Database.Database, month: string): TreasuryD
     })),
   ].sort((x, y) => x.date.localeCompare(y.date) || x.id - y.id)
 
-  // نقاط ارتكاز إضافية وقعت داخل الشهر نفسه (بعد cpMonth) — مثلاً استيراد إكسيل لجزء من الشهر بدأ منتصفه،
-  // أو تعديل يدوي لاحق. cpMonth/prevBalance لا يعرفان عنها لأنهما محسوبان عند بداية الشهر فقط، فيجب "القفز"
+  // نقاط ارتكاز إضافية وقعت داخل الفترة نفسها (بعد cpMonth) — مثلاً استيراد إكسيل لجزء من الشهر بدأ منتصفه،
+  // أو تعديل يدوي لاحق. cpMonth/prevBalance لا يعرفان عنها لأنهما محسوبان عند بداية الفترة فقط، فيجب "القفز"
   // إليها أثناء المرور على الحركات بالترتيب الزمني، وإلا استمر الحساب من الرصيد القديم بالخطأ.
   const midCheckpoints = db.prepare(
     `SELECT date, amount FROM treasury_checkpoints WHERE date LIKE ? AND date > ? ORDER BY date ASC, id ASC`
-  ).all(`${month}%`, cpMonth.date) as { date: string; amount: number }[]
+  ).all(dateLike, cpMonth.date) as { date: string; amount: number }[]
 
   let running = prevBalance, monthIn = 0, monthOut = 0, cpIdx = 0
   for (const m of merged) {
@@ -157,15 +156,12 @@ export function getTreasuryData(db: Database.Database, month: string): TreasuryD
 
   return {
     opening:        cpMonth.amount,
-    openingDate:    cpMonth.date,
-    incomingAll:    incAll,
-    outgoingAll:    outAll,
-    currentBalance: cpLatest.amount + incAll - outAll,
     prevBalance,
     shiftsCount:    merged.length,
     monthIn,
     monthOut,
     movements:      merged,
+    firstShiftDate,
   }
 }
 

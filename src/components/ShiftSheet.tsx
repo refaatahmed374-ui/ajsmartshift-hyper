@@ -332,7 +332,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
 
   function exitPage() {
     if (onClose) onClose()
-    else window.dispatchEvent(new CustomEvent('app:navigate', { detail: 'dashboard' }))
+    else window.dispatchEvent(new CustomEvent('app:closeCurrentTab'))
   }
   function requestClose() {
     const hasData = drafts.some(d => d.description.trim() || d.amount)
@@ -409,16 +409,19 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const cashoutAccent = cashoutDiff < 0 ? '#ef4444' : '#22c55e'
   const basicAirSum = (fawryRes?.basicSales ?? 0) + (fawryRes?.airSales ?? 0)
   // بطلب العميل: "مبيعات فوري + الربحية" أصبحت خلية يدوية يدخلها العميل نفسه بدل حسابها تلقائيًا من النسبة%
-  const fawryWithCommission = fawry?.fawryTotalManual ?? 0
-  // بطلب العميل (تصحيح) — النسبة المئوية لفوري = القيمة اليدوية المُدخَلة (مبيعات فوري+الربحية) ÷ مبيعات أساسي+إيرتايم × 100
-  const fawryPct = basicAirSum > 0 ? (fawryWithCommission / basicAirSum) * 100 : 0
+  // بند مستورد من Excel ("مبيعات البرنامج") يُخزَّن في programSales لا fawryTotalManual — نفس منطق الرجوع
+  // المستخدم بالفعل في core/engine.ts وDashboard.tsx وshiftReport.ts، كان ناقصاً هنا فقط فتظهر الخلية صفراً بعد الاستيراد.
+  const fawryWithCommission = fawry?.fawryTotalManual || fawry?.programSales || 0
+  // بطلب العميل (تصحيح 2) — النسبة المئوية لفوري = نسبة الربح/الزيادة فقط (الفرق بين فوري+الربحية والأساسي+إيرتايم)
+  // ÷ مبيعات أساسي+إيرتايم × 100 — وليست نسبة الإجمالي كاملاً (كانت تطلع فوق 100% دايماً بالمعادلة القديمة)
+  const fawryPct = basicAirSum > 0 ? ((fawryWithCommission - basicAirSum) / basicAirSum) * 100 : 0
   // v2.31.3 — معادلات جديدة من العميل
   const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((s, t) => s + amt(t), 0)
     + dSum(d => d.mainCategoryId === collectMainId)                                                    // التحصيل (وارد)
   const cashierExpenses = txs.filter(t => t.payMethod === 'cashier' && dirOf(t.mainCategoryId ?? 0) === 'out').reduce((s, t) => s + amt(t), 0)
     + dSum(d => d.payMethod === 'cashier' && dirOf(d.mainCategoryId) === 'out')
   const totalSales = shift.posSales + fawryWithCommission
-  const totalExpenses = creditTx + visaTx + cashierExpenses
+  const totalExpenses = shift.cashierRemaining + cashierExpenses
   const { result: netCash } = calcShiftClosing({ posSales: shift.posSales, cashierRemaining: shift.cashierRemaining, cashierExpenses, collections })
 
   return (
@@ -596,8 +599,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
             <SummaryGroup title="🧾 جزء الكاشير" color="#3b82f6">
               <CCardIn label="نقدية الكاشير" value={shift.cashierRemaining} onSave={v => saveClose('cashierRemaining', v)} accent="#f87171" />
               <CCard label="مصروفات الكاشير" value={fmt(cashierExpenses)} />
-              {/* v2.35.1 — أُعيدت تسميتها (كانت "إجمالي المصروفات" — تشابه مع رقم مختلف بنفس الاسم في لوحة التحكم والتقارير) لتصف تكوينها الفعلي: آجل+فيزا (لم تدخل كاش) + مصروفات الكاشير النقدية */}
-              <CCard label="آجل + فيزا + مصروفات الكاشير" value={fmt(totalExpenses)} accent="#f87171" />
+              <CCard label="اجمالي مصروفات الكاشير" value={fmt(totalExpenses)} accent="#f87171" />
               <CCard label="تحصيل" value={fmt(collections)} />
             </SummaryGroup>
 

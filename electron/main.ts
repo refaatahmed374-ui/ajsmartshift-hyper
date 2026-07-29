@@ -211,6 +211,9 @@ handle('emp:setBonus',          (db, empId, date, bonusAmount) => EmpRepo.setAtt
 handle('emp:deleteAttendance',  (db, id)   => EmpRepo.deleteAttendance(db, id as number))
 handle('emp:getAttendanceMonth',(db, eid, month) => EmpRepo.getAttendanceMonth(db, eid as number, month as string))
 handle('emp:financials',        (db, month) => EmpRepo.getMonthlyFinancials(db, month as string))
+// اليومية المستوردة هي المرجع الأساسي لسلف الموظفين — بوابة تسجيل إلزامية في "إدارة الموظفين"
+handle('emp:getUnlinkedAdvances', (db) => EmpRepo.getUnlinkedAdvanceNames(db))
+handle('emp:registerFromAdvance', (db, data) => EmpRepo.registerFromAdvance(db, data as Parameters<typeof EmpRepo.registerFromAdvance>[1]))
 
 // ===== التحديثات التلقائية =====
 autoUpdater.autoDownload = false   // لا ننزّل تلقائياً — ننتظر موافقة المستخدم
@@ -253,8 +256,6 @@ handle('notif:unreadCount',(db)        => NotifRepo.getUnreadCount(db))
 handle('treasury:data', (db, month) => TreasuryRepo.getTreasuryData(db, month as string))
 // v2.27.0 (14-Jun) — تسويات الخزينة + الرواتب + التقفيل الشهري
 handle('treasury:addAdjustment', (db, data) => TreasuryRepo.addTreasuryAdjustment(db, data as Parameters<typeof TreasuryRepo.addTreasuryAdjustment>[1]))
-// v2.33.0 — نقطة ارتكاز مؤرَّخة لرصيد الصندوق (يدوية من الشاشة، أو من استيراد إكسيل)
-handle('treasury:addCheckpoint', (db, data) => TreasuryRepo.addTreasuryCheckpoint(db, data as Parameters<typeof TreasuryRepo.addTreasuryCheckpoint>[1]))
 // v2.33.0 — رصيد الصندوق لمدى تاريخ مرن (لوحة المعلومات: يوم/شهر/سنة/كل الفترات)
 handle('treasury:position', (db, fromDate, toDateExclusive) => TreasuryRepo.getTreasuryPosition(db, fromDate as string, toDateExclusive as string))
 // v2.33.0 — موضع شيفت معيّن على خط رصيد الصندوق (بطاقة الشيفت: رصيد قبل/بعد للتحقّق)

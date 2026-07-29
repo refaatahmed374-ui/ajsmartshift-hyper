@@ -97,6 +97,9 @@ const api = {
     deleteAttendance:   (id: number)                    => ipcRenderer.invoke('emp:deleteAttendance', id),
     getAttendanceMonth: (eid: number, month: string)    => ipcRenderer.invoke('emp:getAttendanceMonth', eid, month),
     financials:         (month: string)                 => ipcRenderer.invoke('emp:financials', month),
+    // اليومية المستوردة هي المرجع الأساسي لسلف الموظفين — بوابة تسجيل إلزامية في "إدارة الموظفين"
+    getUnlinkedAdvances: ()                             => ipcRenderer.invoke('emp:getUnlinkedAdvances'),
+    registerFromAdvance: (data: unknown)                => ipcRenderer.invoke('emp:registerFromAdvance', data),
   },
 
   // الترخيص (Server Authoritative — لا تفعيل بمفتاح محلي بعد الآن)
@@ -128,7 +131,6 @@ const api = {
   treasury: {
     data: (month: string) => ipcRenderer.invoke('treasury:data', month),
     addAdjustment: (data: unknown) => ipcRenderer.invoke('treasury:addAdjustment', data),
-    addCheckpoint: (data: unknown) => ipcRenderer.invoke('treasury:addCheckpoint', data),
     position: (fromDate: string, toDateExclusive: string) => ipcRenderer.invoke('treasury:position', fromDate, toDateExclusive),
     shiftPosition: (shiftId: number) => ipcRenderer.invoke('treasury:shiftPosition', shiftId),
   },

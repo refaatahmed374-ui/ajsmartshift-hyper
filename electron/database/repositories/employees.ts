@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { Employee, Attendance, AttendanceStatus, EmployeeFinancials } from '../../../core/types'
+import { normalizeValue } from '../../services/excelImport/normalize'
+import { similarity } from '../../services/excelImport/similarity'
 
 function row2emp(r: Record<string, unknown>): Employee {
   return {
@@ -231,4 +233,146 @@ export function getMonthlyFinancials(db: Database.Database, month: string): Empl
       dueSalary:     wageByDays  - advances - penaltyByDays + bonusAmount,
     } as EmployeeFinancials
   })
+}
+
+// ═══ اليومية المستوردة هي المرجع الأساسي لسلف الموظفين — بوابة إلزامية في "إدارة الموظفين" ═══
+// كل بند "مصروفات ← سلفة موظف" بلا employee_id يعني اسمًا لسه ملوش موظف مسجَّل. بمجرد التسجيل تُربط
+// كل بنوده القديمة بأثر رجعي تلقائيًا (بغضّ النظر عن الشهر أو تاريخ الاستيراد) — لا إدخال يدوي مكرَّر أبداً.
+
+function salaryAdvanceSubCategoryId(db: Database.Database): number | null {
+  const row = db.prepare(`
+    SELECT sc.id FROM sub_categories sc JOIN main_categories mc ON mc.id = sc.main_category_id
+    WHERE sc.name = 'سلفة موظف' AND mc.name = 'مصروفات'
+  `).get() as { id: number } | undefined
+  return row ? row.id : null
+}
+
+export interface UnlinkedAdvanceName {
+  normName: string
+  rawName: string
+  count: number
+  totalAmountPiastres: number
+  suggestedEmployeeId: number | null
+  suggestedName: string | null
+  suggestedScore: number   // 0..1
+}
+
+// كل الأسماء الظاهرة في بنود "سلفة موظف" المستوردة ولسه مالهاش موظف مربوط — لعرضها في بوابة التسجيل الإلزامية
+export function getUnlinkedAdvanceNames(db: Database.Database): UnlinkedAdvanceName[] {
+  const advanceSubId = salaryAdvanceSubCategoryId(db)
+  if (advanceSubId === null) return []
+
+  const rows = db.prepare(`
+    SELECT description, amount_out AS amountOut
+    FROM transactions WHERE sub_category_id = ? AND employee_id IS NULL
+  `).all(advanceSubId) as { description: string; amountOut: number }[]
+
+  const map = new Map<string, UnlinkedAdvanceName>()
+  for (const r of rows) {
+    const normName = normalizeValue(r.description)
+    if (!normName) continue
+    const existing = map.get(normName)
+    if (existing) { existing.count++; existing.totalAmountPiastres += r.amountOut }
+    else map.set(normName, {
+      normName, rawName: r.description, count: 1, totalAmountPiastres: r.amountOut,
+      suggestedEmployeeId: null, suggestedName: null, suggestedScore: 0,
+    })
+  }
+  if (map.size === 0) return []
+
+  // اقتراح تلقائي بأقرب موظف موجود بالاسم (يدعم حرف ناقص/تشكيل متبقٍ) — يبقى قابلاً للتعديل يدوياً في الشاشة
+  const employees = getAllEmployees(db)
+  const empCandidates = employees.map(e => ({ key: normalizeValue(e.name), id: e.id, name: e.name }))
+  const THRESHOLD = 0.7
+  for (const c of Array.from(map.values())) {
+    let best: { id: number; name: string; score: number } | null = null
+    for (const emp of empCandidates) {
+      const score = similarity(c.normName, emp.key)
+      if (!best || score > best.score) best = { id: emp.id, name: emp.name, score }
+    }
+    if (best && best.score >= THRESHOLD) {
+      c.suggestedEmployeeId = best.id
+      c.suggestedName = best.name
+      c.suggestedScore = best.score
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => b.count - a.count)
+}
+
+function daysInMonth(monthStr: string): number {
+  const [y, m] = monthStr.split('-').map(Number)
+  return new Date(y, m, 0).getDate()
+}
+
+// يوم واحد بعدد ساعات محدَّد (بداية عامة 09:00) — لا يستبدل أي سجل موجود (يدوي أو مستقبلي)
+function fillAttendanceDay(db: Database.Database, employeeId: number, date: string, workHoursHundredths: number): void {
+  const totalMin = Math.round(((workHoursHundredths || 800) / 100) * 60)
+  const outMin = (9 * 60 + totalMin) % (24 * 60)
+  const checkOut = `${String(Math.floor(outMin / 60)).padStart(2, '0')}:${String(outMin % 60).padStart(2, '0')}`
+  db.prepare(`
+    INSERT OR IGNORE INTO attendance (employee_id, date, status, check_in, check_out, hours_worked)
+    VALUES (?, ?, 'present', '09:00', ?, ?)
+  `).run(employeeId, date, checkOut, totalMin)
+}
+
+// بطلب العميل — يملأ الشهر كاملاً (اليوم 1 حتى آخر يوم فيه أو اليوم الحالي أيهما أقرب) بعدد الساعات الافتراضي
+// المُدخَل عند تسجيل الموظف، اعتباراً بأنه عمل طوال الشهر ما لم يوجد سجل حضور فعلي يقول غير ذلك.
+function fillAttendanceForMonth(db: Database.Database, employeeId: number, monthStr: string, workHoursHundredths: number): void {
+  const todayStr = new Date().toISOString().slice(0, 10)
+  const lastDay = daysInMonth(monthStr)
+  for (let d = 1; d <= lastDay; d++) {
+    const dateStr = `${monthStr}-${String(d).padStart(2, '0')}`
+    if (dateStr > todayStr) break
+    fillAttendanceDay(db, employeeId, dateStr, workHoursHundredths)
+  }
+}
+
+// يربط كل بنود "سلفة موظف" غير المربوطة بنفس الاسم المطبَّع بموظف محدَّد بأثر رجعي، ويملأ حضور كل الأشهر المتأثرة تلقائياً
+export function linkAdvancesToEmployee(
+  db: Database.Database, employeeId: number, normName: string,
+): { linkedCount: number; monthsFilled: string[] } {
+  const advanceSubId = salaryAdvanceSubCategoryId(db)
+  if (advanceSubId === null) return { linkedCount: 0, monthsFilled: [] }
+
+  const rows = db.prepare(`
+    SELECT t.id AS txId, t.description AS description, s.date AS date
+    FROM transactions t JOIN shifts s ON s.id = t.shift_id
+    WHERE t.sub_category_id = ? AND t.employee_id IS NULL
+  `).all(advanceSubId) as { txId: number; description: string; date: string }[]
+
+  const matched = rows.filter(r => normalizeValue(r.description) === normName)
+  if (matched.length === 0) return { linkedCount: 0, monthsFilled: [] }
+
+  const upd = db.prepare(`UPDATE transactions SET employee_id = ? WHERE id = ?`)
+  const months = new Set<string>()
+  for (const m of matched) { upd.run(employeeId, m.txId); months.add(m.date.slice(0, 7)) }
+
+  const emp = getEmployeeById(db, employeeId)
+  const workHours = emp?.workHours ?? 800
+  for (const month of Array.from(months)) fillAttendanceForMonth(db, employeeId, month, workHours)
+
+  // يُحفَظ لربط تلقائي فوري لأي استيراد مستقبلي بنفس الاسم — بلا حاجة لإعادة المرور على هذه البوابة
+  db.prepare(`
+    INSERT INTO import_employee_map (excel_name, employee_id) VALUES (?, ?)
+    ON CONFLICT(excel_name) DO UPDATE SET employee_id=excluded.employee_id
+  `).run(normName, employeeId)
+
+  return { linkedCount: matched.length, monthsFilled: Array.from(months).sort() }
+}
+
+// إنشاء موظف جديد (أو استخدام موظف موجود) + ربط سلفه المستوردة فوراً — استدعاء واحد من بوابة التسجيل الإلزامية
+export function registerFromAdvance(
+  db: Database.Database,
+  data: {
+    normName: string
+    employeeId?: number   // موظف موجود بالفعل — يُربط مباشرة بلا إنشاء
+    newEmployee?: { name: string; nationalId: string; phone: string; monthlySalary: number; workHours: number; startDate: string; status: string }
+  },
+): { employeeId: number; linkedCount: number; monthsFilled: string[] } {
+  const employeeId = data.employeeId ?? (() => {
+    if (!data.newEmployee) throw new Error('يجب اختيار موظف موجود أو إدخال بيانات موظف جديد')
+    return createEmployee(db, { ...data.newEmployee, endDate: null })
+  })()
+  const { linkedCount, monthsFilled } = linkAdvancesToEmployee(db, employeeId, data.normName)
+  return { employeeId, linkedCount, monthsFilled }
 }

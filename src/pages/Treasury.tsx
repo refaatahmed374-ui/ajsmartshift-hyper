@@ -3,7 +3,7 @@ import { api, call } from '../lib/api'
 import { useToast } from '../store/toast'
 import Icons from '../components/Icon'
 import { MiniArea, MiniCombo } from '../components/MiniChart'
-import { fmt, fmtDate, parsePias } from '../lib/format'
+import { fmt, fmtDate } from '../lib/format'
 
 interface Movement {
   kind: 'shift' | 'adjustment'
@@ -12,10 +12,9 @@ interface Movement {
 }
 interface TreasuryData {
   opening: number
-  openingDate: string
-  incomingAll: number; outgoingAll: number; currentBalance: number
   prevBalance: number; shiftsCount: number; monthIn: number; monthOut: number
   movements: Movement[]
+  firstShiftDate: string | null
 }
 
 const STATUS_CFG: Record<string, { label: string; color: string }> = {
@@ -28,37 +27,18 @@ const STATUS_CFG: Record<string, { label: string; color: string }> = {
 export default function Treasury() {
   const { show } = useToast()
   const [month, setMonth]   = useState(() => new Date().toISOString().slice(0, 7))
+  // بطلب العميل — وضعان: "شهر محدد" (افتراضي، الفلتر فعّال) أو "الكل" (كل حركات الصندوق من أول شيفت في البرنامج)
+  const [viewMode, setViewMode] = useState<'month' | 'all'>('month')
   const [data,  setData]    = useState<TreasuryData | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // رصيد أول الصندوق — نقطة ارتكاز جديدة مؤرَّخة (لا تؤثر على الشهور قبل تاريخها)
-  const [editingOpen, setEditingOpen] = useState(false)
-  const [openInput, setOpenInput] = useState('')
-  const [openDateInput, setOpenDateInput] = useState(() => new Date().toISOString().slice(0, 10))
-  const [savingOpen, setSavingOpen] = useState(false)
-  // بطلب العميل — شرح استخدام "تعديل رصيد أول الصندوق" وتحذيراته، يظهر عند الضغط على ⓘ
-  const [showOpeningHelp, setShowOpeningHelp] = useState(false)
-
   async function load() {
     setLoading(true)
-    try { setData(await call(api.treasury.data(month)) as TreasuryData) }
+    try { setData(await call(api.treasury.data(viewMode === 'all' ? 'all' : month)) as TreasuryData) }
     catch (e) { show((e as Error).message, 'error') }
     finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [month])
-
-  async function saveOpening() {
-    setSavingOpen(true)
-    try {
-      await call(api.treasury.addCheckpoint({
-        date: openDateInput, amount: parsePias(openInput || '0'), source: 'manual',
-      }))
-      setEditingOpen(false)
-      show('تم حفظ رصيد أول الصندوق ✓', 'success')
-      await load()
-    } catch (e) { show((e as Error).message, 'error') }
-    finally { setSavingOpen(false) }
-  }
+  useEffect(() => { load() }, [month, viewMode])
 
   // رسم الرصيد المتراكم
   const balanceTrend = useMemo(() =>
@@ -73,7 +53,10 @@ export default function Treasury() {
     [data]
   )
 
-  const balance = data?.currentBalance ?? 0
+  // آخر رصيد متراكم في حركات الفترة المعروضة (شهر محدد أو "الكل") — يتماشى تلقائياً مع viewMode لأن الخادم
+  // يُرجع data.movements/prevBalance بنفس النطاق المطلوب أصلاً (month='all' أو month='YYYY-MM').
+  const closingBalance = data ? (data.movements.length ? data.movements[data.movements.length - 1].running : data.prevBalance) : 0
+  const balance = closingBalance
   const balanceColor = balance >= 0 ? '#10b981' : '#ef4444'
 
   // بطلب العميل — آخر حركة خاصة بكل بطاقة (آخر إضافة / آخر صرف / آخر حركة على الرصيد عمومًا)
@@ -91,9 +74,10 @@ export default function Treasury() {
     return rows.length ? rows[rows.length - 1] : null
   }, [data])
   const movementWho = (m: Movement) => m.kind === 'adjustment' ? m.label : `شيفت #${m.shiftNum}`
-  const describeAdded = lastAdded ? `آخر حركة: ${movementWho(lastAdded)} · ${fmtDate(lastAdded.date)} · +${fmt(lastAdded.cashIn)} ج` : 'لا توجد حركة إضافة هذا الشهر'
-  const describeSpent = lastSpent ? `آخر حركة: ${movementWho(lastSpent)} · ${fmtDate(lastSpent.date)} · −${fmt(lastSpent.mgmtOut)} ج` : 'لا توجد حركة صرف هذا الشهر'
-  const describeAny   = lastAny   ? `آخر حركة: ${movementWho(lastAny)} · ${fmtDate(lastAny.date)}` : 'لا توجد حركات هذا الشهر'
+  const periodWord = viewMode === 'all' ? 'في كل الفترة' : 'هذا الشهر'
+  const describeAdded = lastAdded ? `آخر حركة: ${movementWho(lastAdded)} · ${fmtDate(lastAdded.date)} · +${fmt(lastAdded.cashIn)} ج` : `لا توجد حركة إضافة ${periodWord}`
+  const describeSpent = lastSpent ? `آخر حركة: ${movementWho(lastSpent)} · ${fmtDate(lastSpent.date)} · −${fmt(lastSpent.mgmtOut)} ج` : `لا توجد حركة صرف ${periodWord}`
+  const describeAny   = lastAny   ? `آخر حركة: ${movementWho(lastAny)} · ${fmtDate(lastAny.date)}` : `لا توجد حركات ${periodWord}`
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden p-4 gap-3">
@@ -114,89 +98,62 @@ export default function Treasury() {
               حسابات الصندوق
             </h1>
             <div style={{ fontSize: 12, color: 'var(--txt-3)' }}>
-              {data?.shiftsCount ?? 0} شيفت في هذا الشهر
+              {data?.shiftsCount ?? 0} حركة {viewMode === 'all' ? '(كل الفترات)' : 'في هذا الشهر'}
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
           <span style={{ fontSize: 12, color: 'var(--txt-3)' }}>الفترة:</span>
           <input className="field text-xs" type="month" value={month}
-            onChange={e => setMonth(e.target.value)}
-            style={{ width: 150 }} />
+            onChange={e => { setMonth(e.target.value); setViewMode('month') }}
+            disabled={viewMode === 'all'}
+            style={{ width: 150, opacity: viewMode === 'all' ? 0.5 : 1 }} />
+          {/* بطلب العميل — زر "الكل" لعرض كل حركات الصندوق من أول شيفت في البرنامج، بدل الاقتصار على شهر محدد */}
+          <button onClick={() => setViewMode(v => v === 'all' ? 'month' : 'all')}
+            className="px-3 py-1.5 rounded-lg text-xs font-bold transition-all"
+            style={viewMode === 'all'
+              ? { background: 'var(--accent)', color: '#fff' }
+              : { background: 'var(--inner-bg)', color: 'var(--txt-2)', border: '1px solid var(--inner-border)' }}>
+            الكل
+          </button>
         </div>
       </div>
 
       {/* ═══════════ شريط KPIs الاحترافي (4 بطاقات) — بطلب العميل: بالترتيب رصيد أول ← مضاف ← منصرف ← رصيد آخر ═══════════ */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 flex-shrink-0">
 
-        {/* 1) رصيد أول الصندوق (يدوي — قابل للتعديل) */}
+        {/* 1) رصيد أول الصندوق — محسوب تلقائياً من تقارير اليوميات دائماً (بلا أي تعديل يدوي — أُغلقت هذه الخاصية نهائياً) */}
         <div className="rounded-2xl p-4 relative overflow-hidden"
           style={{ background: 'linear-gradient(135deg, #06b6d410, #06b6d404)', border: '1px solid #06b6d445' }}>
           <div className="flex items-start justify-between mb-2">
             <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--txt-2)' }}>رصيد أول الصندوق</span>
-            {!editingOpen && (
-              <button onClick={() => setShowOpeningHelp(v => !v)} className="p-1 rounded-md transition-all"
-                style={{ color: showOpeningHelp ? '#06b6d4' : 'var(--txt-3)', background: showOpeningHelp ? '#06b6d420' : 'transparent' }}
-                title="كيف أستخدم هذا الرصيد؟">
-                <Icons.Info size={14} />
-              </button>
-            )}
           </div>
-          {editingOpen ? (
-            <div className="flex flex-col gap-1.5">
-              <input className="field tabular-nums" type="number" min={0} autoFocus value={openInput}
-                onChange={e => setOpenInput(e.target.value)} placeholder="0" style={{ fontSize: 14, padding: '6px 8px' }} />
-              <input className="field tabular-nums" type="date" value={openDateInput}
-                onChange={e => setOpenDateInput(e.target.value)} style={{ fontSize: 12, padding: '5px 8px' }} />
-              <div style={{ fontSize: 10, color: 'var(--txt-3)' }}>
-                يُعتمد كرصيد بداية من هذا التاريخ فقط — لا يؤثر على شهور سابقة له
-              </div>
-              <div className="flex gap-1.5">
-                <button onClick={saveOpening} disabled={savingOpen} className="btn-primary btn-sm flex-1" style={{ fontSize: 11, padding: '4px' }}>
-                  {savingOpen ? '...' : 'حفظ'}
-                </button>
-                <button onClick={() => setEditingOpen(false)} className="btn-ghost btn-sm" style={{ fontSize: 11, padding: '4px 8px' }}>إلغاء</button>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="tabular-nums" style={{ fontSize: 22, fontWeight: 800, color: '#06b6d4', lineHeight: 1.15 }}>
-                {fmt(data?.opening ?? 0)} <span style={{ fontSize: 11 }}>ج</span>
-              </div>
-              <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
-                آخر حركة: تحديد الرصيد بتاريخ {data?.openingDate && data.openingDate !== '0000-01-01' ? fmtDate(data.openingDate) : '—'}
-              </div>
-              {/* بطلب العميل — الزر كان أيقونة صغيرة سهل تفويتها، أصبح زرًا واضحًا بنص + لون مميّز */}
-              <button onClick={() => {
-                setOpenInput(String((data?.opening ?? 0) / 100))
-                setOpenDateInput(new Date().toISOString().slice(0, 10))
-                setEditingOpen(true)
-                setShowOpeningHelp(false)
-              }} className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg font-bold transition-all hover:scale-[1.02]"
-                style={{ background: '#06b6d4', color: 'white', fontSize: 11.5, boxShadow: '0 2px 10px #06b6d455' }}>
-                <Icons.Settings size={13} /> تعديل رصيد أول الصندوق
-              </button>
-            </>
-          )}
+          {/* رصيد أول الفترة المعروضة — في وضع "الكل" هذا رصيد الصندوق قبل أول شيفت في البرنامج على الإطلاق */}
+          <div className="tabular-nums" style={{ fontSize: 22, fontWeight: 800, color: '#06b6d4', lineHeight: 1.15 }}>
+            {fmt(data?.prevBalance ?? 0)} <span style={{ fontSize: 11 }}>ج</span>
+          </div>
+          <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>
+            {viewMode === 'all'
+              ? `بتاريخ أول شيفت في البرنامج: ${data?.firstShiftDate ? fmtDate(data.firstShiftDate) : '—'}`
+              : `رصيد مرحّل من قبل ${month}`}
+          </div>
         </div>
 
-        {/* 2) المضاف للصندوق */}
+        {/* 2) المضاف للصندوق — لفترة العرض المختارة (شهر محدد أو "الكل" من أول شيفت في البرنامج) */}
         <KpiCard
           label="مضاف للصندوق"
-          value={data?.incomingAll ?? 0}
+          value={data?.monthIn ?? 0}
           icon={<Icons.ArrowRight size={14} />}
           color="#22c55e"
-          subLabel={`+ ${fmt(data?.monthIn ?? 0)} هذا الشهر`}
           movementLabel={describeAdded}
         />
 
-        {/* 3) المنصرف من الصندوق */}
+        {/* 3) المنصرف من الصندوق — لفترة العرض المختارة (مصروفات الشيفتات "إدارة" + التسويات اليدوية) */}
         <KpiCard
           label="منصرف من الصندوق"
-          value={data?.outgoingAll ?? 0}
+          value={data?.monthOut ?? 0}
           icon={<Icons.ArrowRight size={14} className="rotate-180" />}
           color="#ef4444"
-          subLabel={`− ${fmt(data?.monthOut ?? 0)} هذا الشهر`}
           movementLabel={describeSpent}
         />
 
@@ -238,30 +195,6 @@ export default function Treasury() {
         </div>
       </div>
 
-      {/* بطلب العميل — شرح استخدام "رصيد أول الصندوق" + تحذيرات + ماذا يفعل العميل لو الرصيد يبدو غير صحيح */}
-      {showOpeningHelp && (
-        <div className="rounded-2xl p-4 flex-shrink-0" style={{ background: '#06b6d40c', border: '1px solid #06b6d445' }}>
-          <div className="flex items-center gap-2 mb-2.5">
-            <Icons.Info size={15} style={{ color: '#06b6d4' }} />
-            <span style={{ fontSize: 13, fontWeight: 800, color: '#06b6d4' }}>كيف تستخدم "رصيد أول الصندوق"؟</span>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3" style={{ fontSize: 12, lineHeight: 1.8, color: 'var(--txt-2)' }}>
-            <div>
-              <div className="font-bold mb-1" style={{ color: 'var(--txt-1)' }}>✅ متى تستخدمه</div>
-              بعد عدّ نقدية الصندوق فعليًا وبيدك، اضغط "تعديل" وسجّل الرقم الحقيقي بتاريخ اليوم — يصبح نقطة بداية موثوقة تُبنى عليها كل الحسابات من هذا التاريخ فصاعدًا فقط، بلا أي تأثير على شهور سابقة.
-            </div>
-            <div>
-              <div className="font-bold mb-1" style={{ color: '#f59e0b' }}>⚠️ لو أدخلت رقمًا خطأ</div>
-              الخطأ ينتقل تلقائيًا لكل شيء بعده — الرصيد الحالي، فروق الشيفتات، والتقارير — لأنها كلها محسوبة اعتمادًا على هذه النقطة. راجع الرقم جيدًا قبل الحفظ، ولو اكتشفت خطأ لاحقًا سجّل رصيدًا جديدًا صحيحًا بتاريخ اليوم لتصحيحه.
-            </div>
-            <div>
-              <div className="font-bold mb-1" style={{ color: '#ef4444' }}>🔍 لو الرصيد يبدو غير صحيح</div>
-              راجع بالترتيب: (1) هل كل الشيفتات اتقفلت بنقدية كاشير دقيقة؟ (2) هل أي بند اتسجّل بطريقة دفع "إدارة" بالغلط بدل "كاشير"؟ (3) راجع التسويات اليدوية (سحب/دفع رواتب) في نفس الفترة. لو لسه غير مقتنع، اعتمد رصيدًا جديدًا بعد عدّ فعلي بدل محاولة تصحيح الرقم القديم.
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ═══════════ الجدول الرئيسي بعرض كامل ═══════════ */}
       <div className="card p-0 overflow-hidden flex flex-col" style={{ minHeight: 240 }}>
         <div className="px-4 py-2.5 flex items-center justify-between flex-shrink-0"
@@ -296,7 +229,7 @@ export default function Treasury() {
         ) : !data || data.movements.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center gap-2 py-10" style={{ color: 'var(--txt-3)' }}>
             <Icons.Fund size={40} className="opacity-20" />
-            <span className="text-sm">لا توجد حركات هذا الشهر</span>
+            <span className="text-sm">لا توجد حركات {periodWord}</span>
           </div>
         ) : (
           <div className="overflow-auto flex-1">
@@ -318,7 +251,7 @@ export default function Treasury() {
                 <tr className="tr" style={{ background: 'rgba(6,182,212,0.06)' }}>
                   <td className="td" colSpan={6}
                     style={{ color: '#06b6d4', fontWeight: 700, fontStyle: 'italic' }}>
-                    📥 رصيد مرحّل من قبل {month}
+                    📥 {viewMode === 'all' ? 'رصيد قبل أول شيفت في البرنامج' : `رصيد مرحّل من قبل ${month}`}
                   </td>
                   <td className="td tabular-nums font-bold" style={{ color: '#06b6d4', fontSize: 13 }}>
                     {fmt(data.prevBalance)}
@@ -365,7 +298,7 @@ export default function Treasury() {
                 <tr style={{ borderTop: '2px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
                   <td className="td" colSpan={3}
                     style={{ fontWeight: 700, color: 'var(--txt-1)' }}>
-                    إجمالي الشهر
+                    {viewMode === 'all' ? 'الإجمالي الكلي' : 'إجمالي الشهر'}
                   </td>
                   <td className="td tabular-nums font-bold" style={{ color: '#22c55e' }}>
                     +{fmt(data.monthIn)}
@@ -378,7 +311,7 @@ export default function Treasury() {
                     {fmt(data.monthIn - data.monthOut)}
                   </td>
                   <td className="td tabular-nums font-bold" style={{ color: 'var(--accent)', fontSize: 13 }}>
-                    {fmt(data.currentBalance)}
+                    {fmt(closingBalance)}
                   </td>
                   <td className="td"></td>
                 </tr>
@@ -434,8 +367,8 @@ export default function Treasury() {
 }
 
 // ═══════════ بطاقة KPI احترافية ═══════════
-function KpiCard({ label, value, icon, color, subLabel, movementLabel }: {
-  label: string; value: number; icon: React.ReactNode; color: string; subLabel?: string; movementLabel?: string;
+function KpiCard({ label, value, icon, color, movementLabel }: {
+  label: string; value: number; icon: React.ReactNode; color: string; movementLabel?: string;
 }) {
   return (
     <div className="rounded-2xl p-4 relative overflow-hidden transition-all hover:scale-[1.01]"
@@ -454,11 +387,6 @@ function KpiCard({ label, value, icon, color, subLabel, movementLabel }: {
       }}>
         {fmt(value)} <span style={{ fontSize: 11 }}>ج</span>
       </div>
-      {subLabel && (
-        <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 4 }}>
-          {subLabel}
-        </div>
-      )}
       {/* بطلب العميل — آخر حركة خاصة بهذه البطاقة */}
       {movementLabel && (
         <div style={{ fontSize: 10.5, color: 'var(--txt-3)', marginTop: 2 }}>

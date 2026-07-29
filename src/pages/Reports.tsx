@@ -130,6 +130,13 @@ export default function Reports() {
     return Array.from(new Set(matched.map(t => t.subCategoryName).filter(Boolean))).sort()
   }, [allTxs, periodShifts, cfg])
 
+  // بطلب العميل — "الإجمالي" الرئيسي لتقرير المبيعات تحديدًا = مبيعات POS (المرجع الحقيقي للمبيعات، من "سجل اليوميات")،
+  // لا مجموع بنود فيزا/آجل/تحصيل (دي تفاصيل/تسوية ضمن مبيعات POS نفسها مش إضافية عليها) — تفضل معروضة بالتفصيل في الجدول أسفل زي ما هي.
+  const posSalesTotal = useMemo(
+    () => periodShifts.reduce((a, s) => a + (s.posSales ?? 0), 0),
+    [periodShifts]
+  )
+
   // KPIs للتبويبات الثلاثة
   const kpis = useMemo(() => {
     const total = txRows.reduce((s, t) => s + t.amountIn + t.amountOut, 0)
@@ -443,7 +450,8 @@ export default function Reports() {
 
             {/* KPIs */}
             <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
-              <KPICard label="الإجمالي" value={fmt(kpis.total) + ' ج'} color={cfg.color} icon={cfg.icon} />
+              <KPICard label={tab === 'sales' ? 'الإجمالي (مبيعات POS)' : 'الإجمالي'}
+                value={fmt(tab === 'sales' ? posSalesTotal : kpis.total) + ' ج'} color={cfg.color} icon={cfg.icon} />
               <KPICard label="عدد العمليات" value={String(kpis.count)} color="#5aaeff" icon={<Icons.Records size={14}/>} />
               <KPICard label="متوسط العملية" value={fmt(kpis.avg) + ' ج'} color="#8957e5" icon={<Icons.Reports size={14}/>} />
               <KPICard label="أعلى عملية" value={fmt(kpis.max) + ' ج'} color="#d29922" icon={<Icons.ArrowRight size={14}/>} />
@@ -453,6 +461,11 @@ export default function Reports() {
             <div className="card p-0 overflow-hidden">
               <div className="px-4 py-2.5" style={{ borderBottom: '1px solid var(--inner-border)' }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--txt-1)' }}>التوزيع حسب التصنيف الفرعي</div>
+                {tab === 'sales' && (
+                  <div style={{ fontSize: 11, color: 'var(--txt-3)', marginTop: 2 }}>
+                    فيزا/آجل/تحصيل بنود تفصيلية ضمن "مبيعات POS" أعلاه (مش إضافية عليها) — إجمالي الجدول هنا لعناصره هو بس، مش إجمالي المبيعات الكلي.
+                  </div>
+                )}
               </div>
               <table className="w-full text-xs" style={{ borderCollapse: 'collapse' }}>
                 <thead><tr>

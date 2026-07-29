@@ -12,8 +12,10 @@ import type { Database } from 'better-sqlite3'
 import { horusBlockParser } from './blockParser'
 import {
   buildCategoryIndex, resolveCategory, resolvePayment, resolveCashier, directionFromKind,
+  resolveEmployeeByName, getSalaryAdvanceSubCategoryId,
   type CategoryIndex,
 } from './valueMapping'
+import { normalizeValue } from './normalize'
 import { validateTransaction, type MappedTransaction } from './validator'
 import { buildDuplicateIndex, isDuplicate, findPriorImport, type PriorImport } from './duplicateChecker'
 import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses, updateCustody } from '../../database/repositories/shifts'
@@ -170,6 +172,7 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
 
     // 2) فهرس الفئات بعد حفظ القواعد (يشمل القرارات الجديدة)
     const idx: CategoryIndex = buildCategoryIndex(db)
+    const advanceSubId = getSalaryAdvanceSubCategoryId(db)
     const skipSet = new Set(
       Object.entries(opts.categoryDecisions).filter(([, d]) => d.action === 'skip').map(([v]) => v)
     )
@@ -249,12 +252,18 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
           report.errors.push({ sheet: b.sheetName, row: t.rowNum, type: 'duplicate', original: `${t.description} | ${t.amount}`, message: 'مكرّرة (موجودة مسبقاً)' })
           continue
         }
+        // ربط بند "سلفة موظف" بموظف محدَّد (بالاسم في عمود البيان) — فقط لو الاسم معروف مسبقاً من تسجيل سابق
+        // (شاشة "إدارة الموظفين" هي المسؤولة عن تسجيل الأسماء الجديدة وربط سلفها بأثر رجعي — انظر registerFromAdvance)
+        let employeeId: number | null = null
+        if (advanceSubId !== null && res.subCategoryId === advanceSubId) {
+          employeeId = resolveEmployeeByName(db, normalizeValue(t.description))
+        }
         batch.push({
           shiftId: shift.id, journalId: journal.id, description: t.description,
           mainCategoryId: res.mainCategoryId, subCategoryId: res.subCategoryId,
           amountIn: res.direction === 'in' ? amountPiastres : 0,
           amountOut: res.direction === 'out' ? amountPiastres : 0,
-          payMethod, employeeId: null, customerId: null, note: '', createdBy: opts.userId,
+          payMethod, employeeId, customerId: null, note: '', createdBy: opts.userId,
         })
       }
       if (batch.length) {

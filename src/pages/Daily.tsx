@@ -136,7 +136,10 @@ export default function Daily() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <div className="flex-1 overflow-hidden">
-        <ShiftSheet shiftId={activeShift.id} embedded onChanged={() => refreshAll(activeShift.id)} />
+        {/* onDeleted مطلوب صراحة هنا — "حذف الشيفت" ما كان بيستدعي onChanged (فقط onDeleted/onClose)، فكانت الشاشة
+            تفضل عارضة الشيفت المحذوف بلا أي تحديث. loadActiveShift يعيد تحميل الشيفت النشط الحقيقي من القاعدة. */}
+        <ShiftSheet shiftId={activeShift.id} embedded
+          onChanged={() => refreshAll(activeShift.id)} onDeleted={loadActiveShift} />
       </div>
     </div>
   )
