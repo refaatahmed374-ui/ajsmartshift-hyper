@@ -1,6 +1,6 @@
 {
   "name": "aj-smart-shift",
-  "version": "2.37.1",
+  "version": "2.38.0",
   "description": "AJ Smart Shift — نظام إدارة الشيفتات",
   "main": "out/main/index.js",
   "scripts": {
