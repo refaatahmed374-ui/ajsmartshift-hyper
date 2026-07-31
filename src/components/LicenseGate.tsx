@@ -4,21 +4,23 @@ import { useToast } from '../store/toast'
 import Icons from './Icon'
 
 // شاشة التجميد الكامل — تظهر عند انتهاء التجربة/الاشتراك.
-// لا يوجد تفعيل بمفتاح محلي بعد الآن — الترخيص قرار خادمي حصري (Server Authoritative)؛
-// الوسيلة الوحيدة هنا هي إرسال طلب تفعيل/تجديد يراجعه المطوّر عبر لوحة التحكم.
+// لا يظهر للعميل سوى هذه الشاشة (طريقة التفعيل + التفعيل).
 export default function LicenseGate() {
-  const { status, requestActivation, refresh } = useLicense()
+  const { status, requestActivation, refresh, activate } = useLicense()
   const { show } = useToast()
+  const [key, setKey]               = useState('')
+  const [activating, setActivating] = useState(false)
   const [requesting, setRequesting] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
 
   if (!status) return null
 
   const reasonText: Record<string, string> = {
-    trialEnded:  'انتهت الفترة التجريبية المجانية.',
-    expired:     'انتهى اشتراكك. جدّد للاستمرار.',
-    deactivated: 'تم إيقاف هذا الاشتراك. تواصل مع المطوّر.',
-    needsOnline: 'مرّ أكثر من 7 أيام دون اتصال — اتصل بالإنترنت لتأكيد الاشتراك.',
+    trialEnded:      'انتهت الفترة التجريبية المجانية (35 يوماً).',
+    expired:         'انتهى اشتراكك. جدّد للاستمرار.',
+    deactivated:     'تم إيقاف هذا الاشتراك. تواصل مع المطوّر.',
+    transitionEnded: 'انتهت الفترة الانتقالية. فعّل اشتراكك للاستمرار.',
+    needsOnline:     'مرّ أكثر من 7 أيام دون اتصال — اتصل بالإنترنت لتأكيد الاشتراك.',
   }
   const msg = reasonText[status.reason] ?? 'النسخة غير مفعّلة.'
 
@@ -38,6 +40,15 @@ export default function LicenseGate() {
     try { await refresh(); show('تم تحديث حالة الاشتراك', 'info') }
     catch { show('تعذّر التحديث — تحقق من الإنترنت', 'error') }
     finally { setRefreshing(false) }
+  }
+  async function handleActivate() {
+    if (!key.trim()) { show('أدخل مفتاح التفعيل', 'warning'); return }
+    setActivating(true)
+    try {
+      const res = await activate(key.trim())
+      show(res.ok ? 'تم تفعيل النسخة بنجاح ✓' : (res.reason ?? 'فشل التفعيل'), res.ok ? 'success' : 'error')
+    } catch (e) { show((e as Error).message, 'error') }
+    finally { setActivating(false) }
   }
 
   return (
@@ -75,7 +86,7 @@ export default function LicenseGate() {
         {/* طريقة التفعيل */}
         <div className="text-xs leading-relaxed mb-4" style={{ color: '#cbd5e1' }}>
           <span className="font-bold text-white">طريقة التفعيل:</span> اضغط <span className="font-bold">"إرسال طلب تفعيل"</span> ليصل المطوّر
-          <span className="font-bold text-white mx-1">أحمد جلال</span> فوراً، وسيُفعَّل اشتراكك تلقائياً بعد المراجعة — اضغط "تحديث الحالة" لاحقاً لتأكيد التفعيل.
+          <span className="font-bold text-white mx-1">أحمد جلال</span> فوراً، أو انسخ رقم جهازك وأرسله له للحصول على مفتاح، ثم أدخله بالأسفل.
         </div>
 
         {/* الأزرار */}
@@ -97,6 +108,19 @@ export default function LicenseGate() {
               <Icons.Refresh size={13} /> {refreshing ? '...' : 'تحديث الحالة'}
             </button>
           </div>
+        </div>
+
+        {/* مفتاح يدوي */}
+        <div className="flex gap-2">
+          <input value={key} onChange={e => setKey(e.target.value)}
+            placeholder="مفتاح يدوي: XXXX-XXXX-XXXX-XXXX"
+            className="flex-1 px-3 py-2.5 rounded-xl text-sm text-white"
+            style={{ background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.18)', fontFamily: 'monospace' }} />
+          <button onClick={handleActivate} disabled={activating}
+            className="px-4 rounded-xl font-bold text-xs text-white flex items-center gap-1.5"
+            style={{ background: 'linear-gradient(135deg,#10b981,#059669)' }}>
+            <Icons.Check size={14} /> {activating ? '...' : 'تفعيل'}
+          </button>
         </div>
 
         <div className="text-center text-2xs mt-5" style={{ color: '#64748b' }}>

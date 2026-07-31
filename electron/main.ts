@@ -234,9 +234,10 @@ ipcMain.handle('update:install',  () => { autoUpdater.quitAndInstall(); return o
 ipcMain.handle('update:current',  () => ok({ version: app.getVersion() }))
 ipcMain.handle('update:pending',  () => ok(updateInfo))
 
-// ===== الترخيص (Server Authoritative — لا تفعيل بمفتاح محلي بعد الآن) =====
+// ===== الترخيص =====
 ipcMain.handle('license:status',   () => { try { return ok(LicenseRepo.getLicenseStatus()) } catch (e) { return err((e as Error).message) } })
 ipcMain.handle('license:refresh',  async () => { try { return ok(await LicenseRepo.refreshLicenseOnline()) } catch (e) { return err((e as Error).message) } })
+ipcMain.handle('license:activate', (_e, key) => { try { return ok(LicenseRepo.activateLicense(key)) } catch (e) { return err((e as Error).message) } })
 ipcMain.handle('license:requestActivation', async (_e, opts) => { try { return ok(await LicenseRepo.submitActivationRequest(opts ?? {})) } catch (e) { return err((e as Error).message) } })
 
 // ===== الصلاحيات =====

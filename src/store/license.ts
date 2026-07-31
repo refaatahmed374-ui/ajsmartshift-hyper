@@ -3,8 +3,8 @@ import { api, call } from '../lib/api'
 
 export type LicenseTier = 'trial' | 'free' | 'basic' | 'professional' | 'multibranch'
 
-export type LicenseMode = 'trial' | 'subscription'
-export type LicenseReason = 'ok' | 'expired' | 'deactivated' | 'needsOnline' | 'trialEnded'
+export type LicenseMode = 'trial' | 'subscription' | 'transition'
+export type LicenseReason = 'ok' | 'expired' | 'deactivated' | 'needsOnline' | 'transitionEnded' | 'trialEnded'
 
 export interface LicenseStatus {
   deviceCode:  string
@@ -12,6 +12,7 @@ export interface LicenseStatus {
   activated:   boolean
   tier:        LicenseTier
   tierLabel:   string
+  trialStart:  string
   trialEnd:    string
   daysLeft:    number
   daysUsed:    number
@@ -23,6 +24,7 @@ export interface LicenseStatus {
   reason:             LicenseReason
   online:             boolean
   subExpireDate:      string | null
+  transitionDaysLeft: number
 }
 
 // رتبة كل نوع (التجربة = وصول كامل للاختبار)
@@ -43,7 +45,8 @@ interface LicenseState {
   load:     () => Promise<void>
   /** تحقق أونلاين من الاشتراك (يحدّث الذاكرة + الحالة) */
   refresh:  () => Promise<void>
-  /** إرسال طلب تفعيل/تجديد للوحة التحكم — لا تفعيل محلي بمفتاح بعد الآن (Server Authoritative) */
+  activate: (key: string) => Promise<{ ok: boolean; reason?: string }>
+  /** إرسال طلب تفعيل/ترحيل للوحة التحكم */
   requestActivation: (opts?: { customerName?: string; phone?: string; plan?: string }) => Promise<{ ok: boolean; reason?: string }>
   /** هل البرنامج في وضع قراءة فقط (انتهت التجربة/الاشتراك) */
   readOnly: () => boolean
@@ -75,6 +78,12 @@ export const useLicense = create<LicenseState>((set, get) => ({
     } catch (err) {
       console.error('Failed to refresh license status (maybe offline):', err)
     }
+  },
+
+  activate: async (key) => {
+    const res = await call(api.license.activate(key)) as { ok: boolean; reason?: string }
+    if (res.ok) await get().load()
+    return res
   },
 
   requestActivation: async (opts) => {

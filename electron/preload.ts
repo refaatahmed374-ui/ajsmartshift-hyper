@@ -102,10 +102,11 @@ const api = {
     registerFromAdvance: (data: unknown)                => ipcRenderer.invoke('emp:registerFromAdvance', data),
   },
 
-  // الترخيص (Server Authoritative — لا تفعيل بمفتاح محلي بعد الآن)
+  // الترخيص
   license: {
     status:   ()             => ipcRenderer.invoke('license:status'),
     refresh:  ()             => ipcRenderer.invoke('license:refresh'),
+    activate: (key: string)  => ipcRenderer.invoke('license:activate', key),
     requestActivation: (opts: { customerName?: string; phone?: string; plan?: string; note?: string }) =>
                                ipcRenderer.invoke('license:requestActivation', opts),
   },
