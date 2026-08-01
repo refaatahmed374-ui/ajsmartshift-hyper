@@ -12,7 +12,7 @@
  */
 import type { Database } from 'better-sqlite3'
 import type { PayMethod } from '../../../core/types'
-import { normalizeValue } from './normalize'
+import { normalizeValue } from '../../../core/normalize'
 import type { CategoryKind, Direction } from './types'
 
 // القاعدة الرسمية (ADR-012 v2): كل البنود منصرف إلا فئة «تحصيل» → وارد.

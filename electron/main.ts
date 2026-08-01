@@ -84,9 +84,9 @@ app.whenReady().then(() => {
   })
 })
 
-app.on('window-all-closed', () => {
-  // نسخة احتياطية عند الخروج (مضغوطة)
-  try { BackupRepo.createBackup(getDb(), 'exit-') } catch (e) { console.error('Exit backup failed:', e) }
+app.on('window-all-closed', async () => {
+  // نسخة احتياطية عند الخروج (مضغوطة) — ثم تنظيف فوري (بطلب العميل: 5 نسخ غير يدوية بحد أقصى مهما كان السبب)
+  try { await BackupRepo.createBackup(getDb(), 'exit-'); BackupRepo.pruneBackups(5) } catch (e) { console.error('Exit backup failed:', e) }
   closeDb()
   if (process.platform !== 'darwin') app.quit()
 })
@@ -284,14 +284,16 @@ handle('party:addPoints', (db, id, pts)  => PartyRepo.addLoyaltyPoints(db, id as
 
 // ===== النسخ الاحتياطي (معزّز) =====
 handle('backup:list',        (db)        => BackupRepo.listBackups())
-handle('backup:create',      (db)        => BackupRepo.createBackup(db))
+ipcMain.handle('backup:create', async () => {
+  try { return ok(await BackupRepo.createBackup(getDb())) } catch (e) { return err((e as Error).message) }
+})
 handle('backup:delete',      (_db, path) => BackupRepo.deleteBackup(path as string))
 // استعادة نسخة احتياطية: تُكتب فوراً على ملف القاعدة الحيّ، ثم يُعاد تشغيل التطبيق ليقرأها من جديد
 ipcMain.handle('backup:restore', async (_e, backupPath) => {
   try {
     const db = getDb()
     closeDb()
-    BackupRepo.restoreBackup(db, backupPath as string)
+    await BackupRepo.restoreBackup(db, backupPath as string)
     app.relaunch()
     app.exit(0)
     return ok(null)
@@ -332,6 +334,10 @@ ipcMain.handle('excel:analyze', async () => {
 // الاستيراد الفعلي بعد تأكيد التعيينات
 ipcMain.handle('excel:import', async (_e, filePath, options) => {
   try {
+    // بطلب العميل: نسخة احتياطية قبل أي استيراد إكسيل (شبكة أمان لو حصل خطأ في التعيينات) — لا تُوقِف
+    // الاستيراد لو فشلت النسخة نفسها لأي سبب (مساحة تخزين مثلاً)، فقط تُسجَّل في الكونسول
+    try { await BackupRepo.createBackup(getDb(), 'import-'); BackupRepo.pruneBackups(5) }
+    catch (e) { console.error('Pre-import backup failed:', e) }
     const wb = new ExcelJS.Workbook()
     await wb.xlsx.readFile(filePath as string)
     const report = excelRunImport(getDb(), wb, options as ImportOptions)
@@ -421,11 +427,11 @@ ipcMain.handle('backup:openFolder', async () => {
 function scheduleAutoBackup(): void {
   const INTERVAL_MS = 24 * 60 * 60 * 1000  // 24 ساعة
 
-  function doBackup(): void {
+  async function doBackup(): Promise<void> {
     try {
       const db = getDb()
-      BackupRepo.createBackup(db, 'auto-')   // مضغوطة gzip
-      BackupRepo.pruneBackups()               // تنظيف القديمة
+      await BackupRepo.createBackup(db, 'auto-')   // مضغوطة gzip — غير متزامن كي لا يحجب Main Process
+      BackupRepo.pruneBackups(5)                    // بطلب العميل: 5 نسخ غير يدوية بحد أقصى مهما كان السبب
     } catch (e) {
       console.error('Auto backup failed:', e)
     }

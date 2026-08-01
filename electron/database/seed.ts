@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import bcrypt from 'bcryptjs'
 import { initDefaultPermissions } from './repositories/permissions'
-import { normalizeValue } from '../services/excelImport/normalize'
+import { normalizeValue } from '../../core/normalize'
 import { CANONICAL_CATEGORIES } from './canonicalCategories'
 
 export function seedDatabase(db: Database.Database): void {

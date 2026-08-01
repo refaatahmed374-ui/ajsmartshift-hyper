@@ -9,7 +9,7 @@
  * لا يعتمد على الألوان/الخطوط/الحدود — فقط على مواضع الأعمدة ونصّ الترويسة (decision: reading strategy).
  */
 import type { Workbook, Worksheet, Cell } from 'exceljs'
-import { normalizeArabic, normalizeValue } from './normalize'
+import { normalizeArabic, normalizeValue } from '../../../core/normalize'
 import type { ParseResult, RawShiftBlock, RawFawry, RawClosing, RawOpeningBalance, WorkbookParser } from './types'
 import type { ShiftType } from '../../../core/types'
 

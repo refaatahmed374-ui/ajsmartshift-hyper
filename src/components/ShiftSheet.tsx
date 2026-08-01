@@ -6,6 +6,8 @@ import { useAuth } from '../store/auth'
 import { useFloatingWindows } from '../store/floatingWindows'
 import { calcFawry, calcCustody, calcShiftClosing } from '../../core/engine'
 import { generateShiftReportPDF } from '../lib/shiftReport'
+import { similarity } from '../../core/similarity'
+import { normalizeValue } from '../../core/normalize'
 import type {
   Shift, Journal, Transaction, ShiftFawry, ShiftCustody,
   MainCategory, SubCategory, PayMethod, Employee,
@@ -55,6 +57,12 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const [closeDlg, setCloseDlg] = useState(false)
   // بطلب العميل — منع اعتماد الشيفت لو فيه بيانات ناقصة، بدل السماح بالتجاوز
   const [missingItems, setMissingItems] = useState<string[] | null>(null)
+  // v2.38.7 — استبدال confirm() الأصلي (حوار نظام حاجز) بحوار داخل التطبيق: confirm() كان يعطّل تركيز
+  // نافذة Electron لدرجة إن أول عنصر يعتمد على واجهة نظام أصلية بعده (خانة تاريخ) يفضل غير مستجيب لثوانٍ
+  const [confirmDlg, setConfirmDlg] = useState<{
+    title: string; message: string; danger?: boolean; onConfirm: () => void; confirmLabel?: string
+    secondary?: { label: string; onClick: () => void }   // بطلب العميل — خيار ثالث (مثلاً "احذف بلا حفظ") جنب التأكيد/الإلغاء
+  } | null>(null)
   // v2.34.10 — فصل بصري فقط: تبويب فرعي (ماكينة فوري + ملخّص الشيفت) منفصل عن العمليات اليومية لإتاحة مساحة أوسع لتسجيل القيود
   // لا علاقة له بأي منطق حساب أو استيراد — مجرد إخفاء/إظهار عمودين من الشبكة الحالية بنفس المقاسات
   const [subView, setSubView] = useState<'daily' | 'fawry'>('daily')
@@ -174,6 +182,18 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     )
     if (partial) missing.push(`بند غير مكتمل في اليومية: "${partial.description || '—'}" — أكمِل البيان/المبلغ/التصنيف/طريقة الدفع أو امسحه (تبويب البنود اليومية)`)
 
+    // v2.38.4 — بطلب العميل: لا اعتماد لبند "مصروفات ← سلفة موظف/رواتب موظفين" بلا تحديد اسم الموظف
+    for (const t of txs) {
+      if (isAdvanceRow(t.mainCategoryId ?? 0, t.subCategoryId ?? 0) && !t.employeeId) {
+        missing.push(`بند "${t.description || '—'}" (${t.subCategoryName}) — لم يُحدَّد اسم الموظف بعد (تبويب البنود اليومية)`)
+      }
+    }
+    for (const d of filledDrafts) {
+      if (isAdvanceRow(d.mainCategoryId, d.subCategoryId) && !d.employeeId) {
+        missing.push(`بند "${d.description || '—'}" — لم يُحدَّد اسم الموظف بعد (تبويب البنود اليومية)`)
+      }
+    }
+
     // ماكينة فوري
     const fawryBaseFilled = (fawry?.basicReceive ?? 0) > 0 || (fawry?.basicDeliver ?? 0) > 0
       || (fawry?.airReceive ?? 0) > 0 || (fawry?.airDeliver ?? 0) > 0
@@ -191,13 +211,16 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     return missing
   }
 
-  async function approveShift() {
+  async function doApproveShift() {
+    if (!user) return
+    try { await call(api.shifts.updateStatus(shiftId, 'approved', user.id)); await load(); onChanged?.(); toast.show('تم اعتماد الشيفت', 'success') }
+    catch (e) { toast.show((e as Error).message, 'error') }
+  }
+  function approveShift() {
     if (!user) return
     const missing = checkMissingItems()
     if (missing.length > 0) { setMissingItems(missing); return }
-    if (!confirm('اعتماد وإغلاق الشيفت؟ (البيانات محفوظة بالفعل)')) return
-    try { await call(api.shifts.updateStatus(shiftId, 'approved', user.id)); await load(); onChanged?.(); toast.show('تم اعتماد الشيفت', 'success') }
-    catch (e) { toast.show((e as Error).message, 'error') }
+    setConfirmDlg({ title: 'اعتماد الشيفت', message: 'اعتماد وإغلاق الشيفت؟ (البيانات محفوظة بالفعل)', onConfirm: doApproveShift })
   }
 
   async function delTx(id: number) {
@@ -253,19 +276,28 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     const nameMatches = employees.filter(e => val.includes(e.name))
     if (nameMatches.length === 1) {
       setDrafts(ds => ds.map((d, idx) => idx === i ? { ...d, employeeId: nameMatches[0].id } : d))
+    } else {
+      // v2.38.4 — لو الصف عليه موظف مُختار مسبقاً والبيان الجديد بقى مش قريب منه، نبّه بدل ما يفضل غلط بصمت
+      const currentEmployeeId = drafts[i]?.employeeId
+      if (currentEmployeeId) warnIfEmployeeMismatch(val, currentEmployeeId)
     }
     if (val.trim().length < 2) return
     suggestTimers.current.set(i, setTimeout(async () => {
       try {
-        const s = await call(api.tx.suggest(val)) as { mainCategoryId: number; subCategoryId: number | null } | null
+        const s = await call(api.tx.suggest(val)) as { mainCategoryId: number; subCategoryId: number | null; payMethod: PayMethod | null } | null
         if (!s) return
-        let applied = false
+        let appliedCat = false, appliedPay = false
         setDrafts(ds => ds.map((d, idx) => {
-          if (idx !== i || d.mainCategoryId || d.description !== val) return d
-          applied = true
-          return { ...d, mainCategoryId: s.mainCategoryId, subCategoryId: s.subCategoryId ?? 0 }
+          if (idx !== i || d.description !== val) return d
+          const patch: Partial<TxDraft> = {}
+          if (!d.mainCategoryId) { patch.mainCategoryId = s.mainCategoryId; patch.subCategoryId = s.subCategoryId ?? 0; appliedCat = true }
+          // v2.38.5 — بطلب العميل: اقتراح طريقة الدفع أيضاً، وليس التصنيف فقط — فقط لو نسبة الاتفاق التاريخية عالية (suggestCategory)
+          if (!d.payMethod && s.payMethod) { patch.payMethod = s.payMethod; appliedPay = true }
+          return Object.keys(patch).length ? { ...d, ...patch } : d
         }))
-        if (applied) toast.show('✨ تم اقتراح التصنيف تلقائياً بناءً على بيانات سابقة', 'info')
+        if (appliedCat && appliedPay) toast.show('✨ تم اقتراح التصنيف وطريقة الدفع تلقائياً بناءً على بيانات سابقة', 'info')
+        else if (appliedCat) toast.show('✨ تم اقتراح التصنيف تلقائياً بناءً على بيانات سابقة', 'info')
+        else if (appliedPay) toast.show('✨ تم اقتراح طريقة الدفع تلقائياً بناءً على بيانات سابقة', 'info')
       } catch { /* silent */ }
     }, 450))
   }
@@ -307,10 +339,25 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     catch (e) { toast.show((e as Error).message, 'error') }
     finally { setPdfBusy(false) }
   }
-  async function delShift() {
-    if (!confirm('حذف الشيفت وكل بياناته نهائياً؟')) return
+  async function doDelShift() {
     try { await call(api.shifts.delete(shiftId)); toast.show('حُذف الشيفت', 'success'); onDeleted?.(); onClose?.() }
     catch (e) { toast.show((e as Error).message, 'error') }
+  }
+  // v2.38.8 — بطلب العميل: لو فيه بنود مُدخلة لسه مش محفوظة وقت الحذف، يخيّره (حفظ ثم حذف / حذف بلا حفظ / إلغاء)
+  // بدل تأكيد واحد يمسح كل حاجة بصمت — بنفس فكرة حوار "إغلاق الصفحة" الموجود بالفعل
+  function delShift() {
+    const hasData = drafts.some(d => d.description.trim() || d.amount)
+    if (hasData) {
+      setConfirmDlg({
+        title: 'حذف الشيفت', danger: true,
+        message: 'يوجد بنود مُدخلة لم تُحفظ بعد. هل تريد حفظها أولاً قبل حذف الشيفت؟',
+        confirmLabel: '💾 حفظ ثم احذف',
+        onConfirm: async () => { await commitDrafts(); await doDelShift() },
+        secondary: { label: 'احذف بلا حفظ', onClick: doDelShift },
+      })
+    } else {
+      setConfirmDlg({ title: 'حذف الشيفت', message: 'حذف الشيفت وكل بياناته نهائياً؟', danger: true, onConfirm: doDelShift })
+    }
   }
 
   // آلة حاسبة (تقييم آمن — أرقام وعمليات حسابية فقط) — أداة مساعدة، لا علاقة لها بأي حساب رسمي
@@ -368,10 +415,37 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
   const dSum = (pred: (d: TxDraft) => boolean) => filledDrafts.filter(pred).reduce((s, d) => s + parsePias(d.amount), 0)
   const collectMainId = mains.find(m => m.name === 'تحصيل')?.id ?? -1
   const dirOf = (mainCatId: number): 'in' | 'out' => (mainCatId === collectMainId ? 'in' : 'out')
-  // v2.34.11 — خلية "الموظف" تُفعَّل فقط لبند مصروفات ← سلفة موظف (لربط السلفة بموظف مُحدَّد لخصمها من مرتبه)
+  // v2.34.11 — خلية "الموظف" تُفعَّل لبند مصروفات ← سلفة موظف/رواتب موظفين (لربط السلفة/الراتب بموظف مُحدَّد)
+  // v2.38.4 — وُسِّعت لتشمل "رواتب موظفين" أيضاً (كانت "سلفة موظف" فقط) — بطلب العميل لضمان ربط كل بند بموظف
   const advanceMainId = mains.find(m => m.name === 'مصروفات')?.id ?? -1
   const advanceSubId  = subs.find(s => s.name === 'سلفة موظف')?.id ?? -1
-  const isAdvanceRow = (mainCatId: number, subCatId: number) => mainCatId === advanceMainId && subCatId === advanceSubId
+  const salarySubId   = subs.find(s => s.name === 'رواتب موظفين')?.id ?? -1
+  const isAdvanceRow = (mainCatId: number, subCatId: number) =>
+    mainCatId === advanceMainId && (subCatId === advanceSubId || subCatId === salarySubId)
+
+  // v2.38.4 — أقرب موظف لنص "البيان" (تطابق احتواء تام أو تشابه تقريبي يتحمّل خطأ إملائي بسيط)
+  function bestEmployeeMatch(text: string): { employee: Employee; score: number } | null {
+    const norm = normalizeValue(text)
+    if (!norm) return null
+    let best: { employee: Employee; score: number } | null = null
+    for (const e of employees) {
+      const nName = normalizeValue(e.name)
+      if (!nName) continue
+      const score = (norm.includes(nName) || nName.includes(norm)) ? 1 : similarity(norm, nName)
+      if (!best || score > best.score) best = { employee: e, score }
+    }
+    return best
+  }
+  const EMPLOYEE_MATCH_THRESHOLD = 0.6
+  // v2.38.4 — تحذير عدم تطابق البيان مع الموظف المختار (بطلب العميل) — غير حاجز، مجرد اقتراح
+  function warnIfEmployeeMismatch(description: string, selectedEmployeeId: number) {
+    if (!selectedEmployeeId || !description.trim()) return
+    const match = bestEmployeeMatch(description)
+    if (match && match.score >= EMPLOYEE_MATCH_THRESHOLD && match.employee.id !== selectedEmployeeId) {
+      const selectedName = employees.find(e => e.id === selectedEmployeeId)?.name ?? '—'
+      toast.show(`⚠️ البيان "${description}" أقرب لاسم الموظف "${match.employee.name}" — هل تقصده بدلاً من "${selectedName}"؟`, 'warning')
+    }
+  }
   // v2.34.17 — عدد عمليات البيع = فرق رقمي البون (إحصائي فقط، لا يدخل في أي حساب)
   // إصلاح: كانت +1 بالخطأ — "أول بون" قراءة العدّاد قبل أول عملية (كالعدّاد الميكانيكي) وليست رقم أول عملية نفسها
   const saleOpsCount = (fawry?.firstVoucher ?? 0) > 0 && (fawry?.lastVoucher ?? 0) > 0
@@ -422,7 +496,11 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     + dSum(d => d.payMethod === 'cashier' && dirOf(d.mainCategoryId) === 'out')
   const totalSales = shift.posSales + fawryWithCommission
   const totalExpenses = shift.cashierRemaining + cashierExpenses
-  const { result: netCash } = calcShiftClosing({ posSales: shift.posSales, cashierRemaining: shift.cashierRemaining, cashierExpenses, collections })
+  // v2.38.3 — لمعادلة التقفيل فقط: للشيفتات المستورَدة، "مبيعات POS" الأصلية في الشيت كانت شاملة "مبيعات
+  // البرنامج" (programSales) أصلاً، فإضافتها في معادلة العجز/الأوفر كانت تُحتسَب مرتين. fawryTotalManual
+  // (الإدخال اليدوي الحي) فقط يدخل معادلة التقفيل — بعكس fawryWithCommission أعلاه المستخدَم للعرض فقط.
+  const fawrySalesForClosing = fawry?.fawryTotalManual ?? 0
+  const { result: netCash } = calcShiftClosing({ posSales: shift.posSales, fawrySales: fawrySalesForClosing, cashierRemaining: shift.cashierRemaining, cashierExpenses, collections })
 
   return (
     <div className="flex flex-col h-full" style={{ color: 'var(--txt-1)' }}>
@@ -488,7 +566,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
                     <td className="td-lg"><select value={draft.payMethod} onChange={e => setDraft({ ...draft, payMethod: e.target.value as PayMethod | '' })} className="w-full" style={payInp}><option value="">لا شيء</option>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
                     <td className="td-lg">
                       {isAdvanceRow(draft.mainCategoryId, draft.subCategoryId)
-                        ? <select value={draft.employeeId} onChange={e => setDraft({ ...draft, employeeId: Number(e.target.value) })} className="w-full" style={inp}><option value={0}>—</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+                        ? <select value={draft.employeeId} onChange={e => { const v = Number(e.target.value); setDraft({ ...draft, employeeId: v }); warnIfEmployeeMismatch(draft.description, v) }} className="w-full" style={inp}><option value={0}>—</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
                         : <span style={{ color: 'var(--txt-3)' }}>—</span>}
                     </td>
                     <td className="td-lg text-center"><span className="text-2xs font-bold px-1.5 py-0.5 rounded-full" style={dirOf(draft.mainCategoryId) === 'in' ? { background: 'rgba(34,197,94,0.13)', color: G.edit } : { background: 'rgba(248,113,113,0.13)', color: G.warn }}>{dirOf(draft.mainCategoryId) === 'in' ? 'وارد' : 'منصرف'}</span></td>
@@ -521,7 +599,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
                     <td className="td-lg"><select data-cell={`${i}-4`} onKeyDown={e => onCellKey(e, i, 4)} value={d.payMethod} onChange={e => setDraftRow(i, { payMethod: e.target.value as PayMethod | '' })} className="w-full sheet-cell" style={payInp}><option value="">لا شيء</option>{PAY_OPTIONS.map(k => <option key={k} value={k}>{PAY[k]}</option>)}</select></td>
                     <td className="td-lg">
                       {isAdvanceRow(d.mainCategoryId, d.subCategoryId)
-                        ? <select value={d.employeeId} onChange={e => setDraftRow(i, { employeeId: Number(e.target.value) })} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
+                        ? <select value={d.employeeId} onChange={e => { const v = Number(e.target.value); setDraftRow(i, { employeeId: v }); warnIfEmployeeMismatch(d.description, v) }} className="w-full sheet-cell" style={inp}><option value={0}>—</option>{employees.map(e => <option key={e.id} value={e.id}>{e.name}</option>)}</select>
                         : <span style={{ color: 'var(--txt-3)' }}>—</span>}
                     </td>
                     <td className="td-lg text-center"><span className="text-2xs font-bold px-1.5 py-0.5 rounded-full" style={dirOf(d.mainCategoryId) === 'in' ? { background: 'rgba(34,197,94,0.13)', color: G.edit } : { background: 'rgba(248,113,113,0.13)', color: G.warn }}>{dirOf(d.mainCategoryId) === 'in' ? 'وارد' : 'منصرف'}</span></td>
@@ -787,6 +865,31 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
               <button onClick={closeWithSave} className="text-sm font-bold px-4 py-2 rounded-lg text-white" style={{ background: 'linear-gradient(90deg,#16a34a,#22c55e)' }}>💾 حفظ وإغلاق</button>
               <button onClick={closeNoSave} className="text-sm font-bold px-4 py-2 rounded-lg" style={{ color: '#f87171', border: '1px solid rgba(248,113,113,0.4)' }}>إغلاق بدون حفظ</button>
               <button onClick={() => setCloseDlg(false)} className="text-sm px-3 py-2 rounded-lg" style={{ color: 'var(--txt-2)', border: '1px solid var(--inner-border)' }}>إلغاء</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* v2.38.7 — حوار تأكيد داخل التطبيق (بديل confirm() الأصلي — راجع سبب الاستبدال أعلى تعريف confirmDlg) */}
+      {confirmDlg && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.65)', backdropFilter: 'blur(4px)' }} onClick={() => setConfirmDlg(null)}>
+          <div className="card p-6 max-w-sm text-center" onClick={e => e.stopPropagation()} style={{ border: `1px solid ${confirmDlg.danger ? 'rgba(248,113,113,0.4)' : 'var(--inner-border)'}` }}>
+            <div className="text-3xl mb-2">{confirmDlg.danger ? '⚠️' : '❓'}</div>
+            <div className="font-black text-base mb-1" style={{ color: 'var(--txt-1)' }}>{confirmDlg.title}</div>
+            <div className="text-xs mb-4" style={{ color: 'var(--txt-2)' }}>{confirmDlg.message}</div>
+            <div className="flex items-center gap-2 justify-center flex-wrap">
+              <button onClick={() => { const fn = confirmDlg.onConfirm; setConfirmDlg(null); fn() }}
+                className="text-sm font-bold px-4 py-2 rounded-lg text-white"
+                style={{ background: confirmDlg.danger ? 'linear-gradient(90deg,#ef4444,#dc2626)' : 'linear-gradient(90deg,#16a34a,#22c55e)' }}>
+                {confirmDlg.confirmLabel ?? 'تأكيد'}
+              </button>
+              {confirmDlg.secondary && (
+                <button onClick={() => { const fn = confirmDlg.secondary!.onClick; setConfirmDlg(null); fn() }}
+                  className="text-sm font-bold px-4 py-2 rounded-lg" style={{ color: '#f87171', border: '1px solid rgba(248,113,113,0.4)' }}>
+                  {confirmDlg.secondary.label}
+                </button>
+              )}
+              <button onClick={() => setConfirmDlg(null)} className="text-sm px-3 py-2 rounded-lg" style={{ color: 'var(--txt-2)', border: '1px solid var(--inner-border)' }}>إلغاء</button>
             </div>
           </div>
         </div>

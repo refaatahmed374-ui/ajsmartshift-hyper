@@ -3,7 +3,7 @@ import { existsSync, copyFileSync } from 'fs'
 import { seedDatabase } from './seed'
 import { initDefaultPermissions } from './repositories/permissions'
 import { dbPath as dataDbPath, legacyDbPath } from '../paths'
-import { normalizeArabic } from '../services/excelImport/normalize'
+import { normalizeArabic } from '../../core/normalize'
 import { CANONICAL_CATEGORIES } from './canonicalCategories'
 
 // v2.34.26 — نفس مرجع حارس التصنيفات (repositories/transactions.ts) لتصحيح التصنيفات القائمة تلقائيًا
@@ -668,6 +668,11 @@ const MIGRATIONS = [
      created_by  INTEGER,
      created_at  TEXT NOT NULL DEFAULT (datetime('now'))
    )`,
+
+  // بطلب العميل — توسيع الاقتراح الذكي ليشمل "طريقة الدفع" أيضاً (كان يقترح التصنيف فقط):
+  // نتتبّع توزيع طريقة الدفع الفعلية لكل نمط بيان، ونقترحها فقط لو نسبة الاتفاق عالية (٪ كبيرة)
+  `ALTER TABLE smart_labels ADD COLUMN pay_cashier_count    INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE smart_labels ADD COLUMN pay_management_count INTEGER NOT NULL DEFAULT 0`,
 ]
 
 let _db: Database.Database | null = null

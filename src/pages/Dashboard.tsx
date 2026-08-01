@@ -114,6 +114,10 @@ export default function Dashboard() {
   // بطلب العميل: "مبيعات فوري + الربحية" يدخلها العميل يدويًا لكل شيفت — نقرأها مباشرة، ونرجع لـ programSales
   // فقط للشيفتات القديمة المستورَدة من الإكسل (لأن fawryTotalManual لا وجود له فيها)
   const fawryWith = (s: Shift) => { const f = fawryMap[s.id]; return f ? (f.fawryTotalManual || f.programSales) : 0 }
+  // v2.38.3 — لمعادلة التقفيل فقط: للشيفتات المستورَدة، "مبيعات POS" الأصلية في الشيت كانت شاملة "مبيعات
+  // البرنامج" (programSales) أصلاً، فإضافتها في معادلة العجز/الأوفر كانت تُحتسَب مرتين. fawryTotalManual
+  // (الإدخال اليدوي الحي) فقط يدخل معادلة التقفيل — بعكس fawryWith أعلاه المستخدَم لعرض مؤشر فوري فقط.
+  const fawryForClosing = (s: Shift) => fawryMap[s.id]?.fawryTotalManual ?? 0
   // v2.34.32 — شيفت "open" لسه ما اتقفلش: posSales/cashierRemaining لسه صفر افتراضي (لم يُدخَلا بعد)
   // بينما بنود اليومية المُسجَّلة فعلاً أثناءه حقيقية → resultOf عليه بيطلع "أوفر" وهمي كبير (مصروفات/تحصيل حقيقيين ناقص صفر مبيعات).
   // لازم يُستبعَد من كل إحصائيات الأوفر/العجز والمبيعات لحد ما يتقفل فعليًا (review/approved) وتبقى أرقامه حقيقية.
@@ -130,7 +134,7 @@ export default function Dashboard() {
     const tx = txByShift[s.id] ?? []
     const collections = tx.filter(t => t.mainCategoryName === 'تحصيل').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
     const cashierExpenses = tx.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((a, t) => a + t.amountIn + t.amountOut, 0)
-    return calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
+    return calcShiftClosing({ posSales: s.posSales ?? 0, fawrySales: fawryForClosing(s), cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
   }
   // بطلب العميل — "مبيعات" في لوحة المعلومات = مبيعات POS فقط (يطابق "مبيعات POS" في سجل اليوميات)،
   // بلا فوري — مبيعات فوري لها مؤشرها الخاص (fawryOnly) منفصلاً في "تحليل المبيعات"/"مؤشر المبيعات".

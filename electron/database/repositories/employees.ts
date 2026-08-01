@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { Employee, Attendance, AttendanceStatus, EmployeeFinancials } from '../../../core/types'
-import { normalizeValue } from '../../services/excelImport/normalize'
-import { similarity } from '../../services/excelImport/similarity'
+import { normalizeValue } from '../../../core/normalize'
+import { similarity } from '../../../core/similarity'
 
 function row2emp(r: Record<string, unknown>): Employee {
   return {

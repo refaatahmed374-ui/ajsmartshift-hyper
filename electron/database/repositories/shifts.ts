@@ -178,8 +178,14 @@ export function closeShift(
   `).run(cashierRemaining, posSales, cashierRemaining, cashierCollections, shiftExpenses, shiftId)
 
   // تنبيه تلقائي عند عجز/أوفر — المعادلة الرسمية الموحّدة (core/engine)
+  // مبيعات فوري تدخل درج الكاشير فعلياً فلازم تدخل معادلة العجز/الأوفر (نفس معادلة الشاشة الحيّة).
+  // closeShift لا يُستدعى إلا من الإقفال الحي (فوري دايماً 0 هنا للشيفتات المستورَدة، لا حاجة لاستبعاد
+  // برنامج فوري صراحة)، لكن نقرأ fawry_total_manual فقط تحسباً — لا نسقط على program_sales إطلاقاً.
+  const fawryRow = db.prepare(`SELECT fawry_total_manual FROM shift_fawry WHERE shift_id = ?`)
+    .get(shiftId) as { fawry_total_manual: number } | undefined
+  const fawrySales = fawryRow?.fawry_total_manual ?? 0
   const { result, status } = calcShiftClosing({
-    posSales, cashierRemaining, cashierExpenses: shiftExpenses, collections: cashierCollections,
+    posSales, fawrySales, cashierRemaining, cashierExpenses: shiftExpenses, collections: cashierCollections,
   })
   if (status !== 'balanced') {
     const shiftInfo = db.prepare(`SELECT monthly_shift_num, cashier_name FROM shifts WHERE id = ?`)

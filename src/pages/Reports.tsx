@@ -6,6 +6,7 @@ import Icons from '../components/Icon'
 import KPICard from '../components/KPICard'
 import { MiniCombo } from '../components/MiniChart'
 import ShiftSheet from '../components/ShiftSheet'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { fmt, fmtDate, shiftTypeLabel, parsePias } from '../lib/format'
 import { calcShiftClosing, calcFawry } from '../../core/engine'
 import { APP_VERSION } from '../version'
@@ -73,6 +74,7 @@ export default function Reports() {
   const [day, setDay] = useState(() => new Date().toISOString().slice(0, 10))
   const [shifts, setShifts] = useState<Shift[]>([])
   const [allTxs, setAllTxs] = useState<Transaction[]>([])
+  const [fawryMap, setFawryMap] = useState<Record<number, { programSales: number; fawryTotalManual: number }>>({})
   const [empFin, setEmpFin] = useState<EmployeeFinancials[]>([])
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -81,6 +83,8 @@ export default function Reports() {
   // v2.33.0 — فلتر تصنيف فرعي خاص بكل قسم (مبيعات/مشتريات/مصروفات) + بحث اسم الموظف
   const [subFilter, setSubFilter] = useState('')
   const [empSearch, setEmpSearch] = useState('')
+  // v2.38.5 — بطلب العميل: بحث بالاسم (البيان) في تقارير المبيعات/المشتريات (وباقي التبويبات المشتركة)
+  const [descSearch, setDescSearch] = useState('')
 
   const printRef = useRef<HTMLDivElement>(null)
 
@@ -93,6 +97,10 @@ export default function Reports() {
       const shiftIds = shiftList.map(s => s.id)
       const allTransactions = await call(api.tx.getByShiftIds(shiftIds)) as Transaction[]
       setAllTxs(allTransactions)
+      const fawryRows = await call<{ shiftId: number; programSales: number; fawryTotalManual: number }[]>(api.fawry.allClosing()).catch(() => [])
+      const fm: Record<number, { programSales: number; fawryTotalManual: number }> = {}
+      for (const r of fawryRows) fm[r.shiftId] = { programSales: r.programSales, fawryTotalManual: r.fawryTotalManual }
+      setFawryMap(fm)
       setEmpFin(await call(api.emp.financials(month)) as EmployeeFinancials[])
       setBizName((await call(api.settings.get('biz.name')) as string) || '')
       setFinData(await call(api.stats.financials(month)) as FinancialData)
@@ -103,8 +111,8 @@ export default function Reports() {
 
   const cfg = TABS.find(t => t.id === tab)!
 
-  // إعادة ضبط فلتر التصنيف الفرعي عند تغيير التبويب (كل قسم له تصنيفاته الخاصة)
-  useEffect(() => { setSubFilter('') }, [tab])
+  // إعادة ضبط فلتر التصنيف الفرعي وبحث البيان عند تغيير التبويب (كل قسم له تصنيفاته الخاصة)
+  useEffect(() => { setSubFilter(''); setDescSearch('') }, [tab])
 
   // شيفتات الفترة الفعلية المعروضة (الشهر كاملاً، أو يوم واحد محدد داخله)
   const periodShifts = useMemo(
@@ -116,12 +124,14 @@ export default function Reports() {
   const txRows = useMemo(() => {
     if (tab === 'employees') return []
     const shiftMap = new Map(periodShifts.map(s => [s.id, s]))
+    const q = descSearch.trim().toLowerCase()
     return allTxs
       .filter(t => shiftMap.has(t.shiftId))
       .filter(t => cfg.match.test(t.mainCategoryName || ''))
       .filter(t => !subFilter || t.subCategoryName === subFilter)
+      .filter(t => !q || t.description.toLowerCase().includes(q))
       .map(t => ({ ...t, shift: shiftMap.get(t.shiftId) }))
-  }, [allTxs, periodShifts, tab, cfg, subFilter])
+  }, [allTxs, periodShifts, tab, cfg, subFilter, descSearch])
 
   // التصنيفات الفرعية المتاحة لهذا القسم (بمعزل عن فلتر التصنيف نفسه، حتى تظهر كل الخيارات دائماً)
   const subOptions = useMemo(() => {
@@ -165,27 +175,44 @@ export default function Reports() {
   )
 
   // ===== تصدير PDF عبر html2canvas (عربية مثالية) =====
+  // v2.38.5 — إصلاح: كانت الصورة الكاملة (غير مقصوصة) تُضاف بالكامل في كل صفحة (بمجرد إزاحتها) بدل
+  // تقطيعها فعليًا لكل صفحة — مع PNG (بلا ضغط) بدقة x2، ينتج حجم ملف ضخم جدًا لأي تقرير متعدد الصفحات.
+  // الحل: نفس أسلوب التقطيع الفعلي المستخدَم بالفعل في shiftReport.ts (JPEG مضغوط + قصّ حقيقي لكل صفحة).
   async function exportPDF() {
     if (!printRef.current) return
     setExporting(true)
     try {
       const html2canvas = (await import('html2canvas')).default
       const { default: jsPDF } = await import('jspdf')
-      const canvas = await html2canvas(printRef.current, { scale: 2, backgroundColor: '#ffffff', useCORS: true })
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
       const pageW = 210, pageH = 297, margin = 8
       const imgW = pageW - margin * 2
+      const usableH = pageH - margin * 2
+      const JPEG_QUALITY = 0.85
+
+      const canvas = await html2canvas(printRef.current, { scale: 1.5, backgroundColor: '#ffffff', useCORS: true })
       const imgH = (canvas.height * imgW) / canvas.width
-      let heightLeft = imgH
-      let position = margin
-      const img = canvas.toDataURL('image/png')
-      pdf.addImage(img, 'PNG', margin, position, imgW, imgH)
-      heightLeft -= (pageH - margin * 2)
-      while (heightLeft > 0) {
-        position = margin - (imgH - heightLeft)
-        pdf.addPage()
-        pdf.addImage(img, 'PNG', margin, position, imgW, imgH)
-        heightLeft -= (pageH - margin * 2)
+
+      if (imgH <= usableH) {
+        pdf.addImage(canvas.toDataURL('image/jpeg', JPEG_QUALITY), 'JPEG', margin, margin, imgW, imgH)
+      } else {
+        const sliceH_px = Math.floor((usableH * canvas.width) / imgW)
+        let yPx = 0, isFirst = true
+        while (yPx < canvas.height) {
+          const currentSlicePx = Math.min(sliceH_px, canvas.height - yPx)
+          const sliceCanvas = document.createElement('canvas')
+          sliceCanvas.width = canvas.width
+          sliceCanvas.height = currentSlicePx
+          const ctx = sliceCanvas.getContext('2d')!
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height)
+          ctx.drawImage(canvas, 0, -yPx)
+          const sliceH_mm = (currentSlicePx * imgW) / canvas.width
+          if (!isFirst) pdf.addPage()
+          pdf.addImage(sliceCanvas.toDataURL('image/jpeg', JPEG_QUALITY), 'JPEG', margin, margin, imgW, sliceH_mm)
+          isFirst = false
+          yPx += currentSlicePx
+        }
       }
       pdf.save(`AJ-${tab}-${month}.pdf`)
       show('تم تصدير PDF', 'success')
@@ -300,7 +327,7 @@ export default function Reports() {
         {loading ? (
           <div className="text-center py-10" style={{ color: 'var(--txt-3)' }}>جاري التحميل...</div>
         ) : tab === 'journal' ? (
-          <JournalReport shifts={shifts} allTxs={allTxs} month={month} bizName={bizName} onReload={load} />
+          <JournalReport shifts={shifts} allTxs={allTxs} fawryMap={fawryMap} month={month} bizName={bizName} onReload={load} />
         ) : tab === 'monthly_close' ? (
           <MonthlyCloseReport month={month} shifts={shifts} allTxs={allTxs} empFin={empFin} finData={finData} onReload={load} />
         ) : tab === 'annual_close' ? (
@@ -434,8 +461,8 @@ export default function Reports() {
           </>
         ) : (
           <>
-            {/* فلتر التصنيف الفرعي الخاص بهذا القسم */}
-            <div className="flex items-center gap-2">
+            {/* فلتر التصنيف الفرعي + بحث بالاسم (البيان) الخاصين بهذا القسم */}
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs font-bold" style={{ color: 'var(--txt-3)' }}>تصنيف فرعي:</span>
               <select className="field text-xs" style={{ width: 200 }} value={subFilter} onChange={e => setSubFilter(e.target.value)}>
                 <option value="">الكل ({subOptions.length} تصنيف)</option>
@@ -444,6 +471,14 @@ export default function Reports() {
               {subFilter && (
                 <button onClick={() => setSubFilter('')} className="text-2xs px-2 py-1 rounded-md" style={{ background: 'var(--inner-bg)', color: 'var(--txt-3)' }}>
                   ✕ إلغاء الفلتر
+                </button>
+              )}
+              <span className="text-xs font-bold mr-2" style={{ color: 'var(--txt-3)' }}>بحث بالاسم:</span>
+              <input value={descSearch} onChange={e => setDescSearch(e.target.value)} placeholder="ابحث في البيان..."
+                className="field text-xs" style={{ width: 200 }} />
+              {descSearch && (
+                <button onClick={() => setDescSearch('')} className="text-2xs px-2 py-1 rounded-md" style={{ background: 'var(--inner-bg)', color: 'var(--txt-3)' }}>
+                  ✕ مسح البحث
                 </button>
               )}
             </div>
@@ -605,17 +640,20 @@ export default function Reports() {
 // ═══════════════════════════════════════════════════════════
 // v2.27.0 — مكون سجل اليوميات: استعراض مكثف لكل البنود
 // ═══════════════════════════════════════════════════════════
-function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
-  shifts: Shift[]; allTxs: Transaction[]; month: string; bizName: string; onReload: () => void;
+function JournalReport({ shifts, allTxs, fawryMap, month, bizName: _bizName, onReload }: {
+  shifts: Shift[]; allTxs: Transaction[]; fawryMap: Record<number, { programSales: number; fawryTotalManual: number }>; month: string; bizName: string; onReload: () => void;
 }) {
   // ── نتيجة كل شيفت — المعادلة الرسمية الموحّدة (ADR-012 v2) ──
-  // الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
+  // الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − (مبيعات POS + مبيعات فوري)
   type Kind = 'surplus' | 'deficit' | 'balanced'
   function shiftResult(s: Shift): { result: number; kind: Kind } {
     const txs             = allTxs.filter(t => t.shiftId === s.id)
     const collections     = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((sm, t) => sm + t.amountIn, 0)
     const cashierExpenses = txs.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((sm, t) => sm + t.amountIn + t.amountOut, 0)
-    const { result, status } = calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
+    // v2.38.3 — للشيفتات المستورَدة: "مبيعات POS" الأصلية في الشيت كانت شاملة "مبيعات البرنامج" (programSales)
+    // أصلاً، فإضافتها هنا كانت تُحتسَب مرتين. fawryTotalManual (الإدخال اليدوي الحي) فقط يدخل معادلة التقفيل.
+    const fawrySales = fawryMap[s.id]?.fawryTotalManual ?? 0
+    const { result, status } = calcShiftClosing({ posSales: s.posSales ?? 0, fawrySales, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
     return { result, kind: status }
   }
   const KIND_STYLE: Record<Kind, { bg: string; border: string; text: string; label: string; glow: string }> = {
@@ -629,6 +667,13 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
   const [deleting,    setDeleting]    = useState(false)
   // ADR-012 — الشاشة الموحّدة (تحلّ محل المودال القديم)
   const [sheetId,     setSheetId]     = useState<number | null>(null)
+  // v2.38.8 — بطلب العميل: ترتيب شبكة البطاقات — افتراضيًا تصاعدي (١ أعلى اليمين) بدل تنازلي، مع زر
+  // تبديل فوري للرجوع للترتيب القديم بلا أي تعديل كود لو الشكل الجديد مش عاجبه
+  const [sortAsc, setSortAsc] = useState(true)
+  const sortedShifts = useMemo(
+    () => sortAsc ? [...shifts].sort((a, b) => a.monthlyShiftNum - b.monthlyShiftNum) : shifts,
+    [shifts, sortAsc]
+  )
 
   async function confirmDelete() {
     if (!deleteShift) return
@@ -668,7 +713,11 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
             <span style={{ color: 'var(--txt-2)' }}>{KIND_STYLE[k].label}</span>
           </span>
         ))}
-        <span className="mr-auto" style={{ color: 'var(--txt-3)' }}>{shifts.length} شيفت في {month}</span>
+        <button onClick={() => setSortAsc(v => !v)} className="mr-auto text-2xs px-2.5 py-1 rounded-lg font-bold flex items-center gap-1"
+          style={{ background: 'var(--inner-bg)', border: '1px solid var(--inner-border)', color: 'var(--accent)' }}>
+          {sortAsc ? '⬇ الأقدم أولاً (١ أعلى)' : '⬆ الأحدث أولاً (الأخير أعلى)'}
+        </button>
+        <span style={{ color: 'var(--txt-3)' }}>{shifts.length} شيفت في {month}</span>
       </div>
 
       {/* شبكة البطاقات */}
@@ -679,7 +728,7 @@ function JournalReport({ shifts, allTxs, month, bizName: _bizName, onReload }: {
         </div>
       ) : (
         <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))' }}>
-          {shifts.map(s => {
+          {sortedShifts.map(s => {
             const { result, kind } = shiftResult(s)
             const st = KIND_STYLE[kind]
             return (
@@ -768,20 +817,21 @@ function PayrollReportsList() {
   const { show } = useToast()
   const [reports, setReports] = useState<PayrollRow[]>([])
   const [openId,  setOpenId]  = useState<number | null>(null)
+  const [deleteRow, setDeleteRow] = useState<PayrollRow | null>(null)
 
   function reload() {
     call(api.payroll.list()).then(r => setReports(r as PayrollRow[])).catch(() => {})
   }
   useEffect(() => { reload() }, [])
 
-  async function handleDelete(r: PayrollRow) {
-    if (!confirm(`حذف تقرير رواتب شهر ${r.month} (${fmt(r.total_amount)} ج)؟\nسيُعاد المبلغ إلى الصندوق (عكس الخصم).`)) return
+  async function doDelete(r: PayrollRow) {
     try {
       await call(api.payroll.delete(r.id))
       show('تم حذف التقرير وإعادة المبلغ للخزينة ✓', 'success')
       reload()
     } catch (e) { show((e as Error).message, 'error') }
   }
+  function handleDelete(r: PayrollRow) { setDeleteRow(r) }
 
   if (reports.length === 0) return null
 
@@ -824,16 +874,39 @@ function PayrollReportsList() {
       document.body.appendChild(container)
       const html2canvas = (await import('html2canvas')).default
       const { default: jsPDF } = await import('jspdf')
-      const canvas = await html2canvas(container.querySelector('#payroll-pdf') as HTMLElement, { scale: 2, backgroundColor: '#fff' })
-      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-      const imgW = 194, imgH = (canvas.height * imgW) / canvas.width
-      pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 8, 8, imgW, imgH)
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4', compress: true })
+      const margin = 8, imgW = 194, usableH = 297 - margin * 2, JPEG_QUALITY = 0.85
+      const canvas = await html2canvas(container.querySelector('#payroll-pdf') as HTMLElement, { scale: 1.5, backgroundColor: '#fff' })
+      const imgH = (canvas.height * imgW) / canvas.width
+      // v2.38.5 — إصلاح: لم يكن هناك أي تقطيع لصفحات — تقرير رواتب فيه موظفون كُثر كان يُقصّ ويختفي جزء منه بصمت
+      if (imgH <= usableH) {
+        pdf.addImage(canvas.toDataURL('image/jpeg', JPEG_QUALITY), 'JPEG', margin, margin, imgW, imgH)
+      } else {
+        const sliceH_px = Math.floor((usableH * canvas.width) / imgW)
+        let yPx = 0, isFirst = true
+        while (yPx < canvas.height) {
+          const currentSlicePx = Math.min(sliceH_px, canvas.height - yPx)
+          const sliceCanvas = document.createElement('canvas')
+          sliceCanvas.width = canvas.width
+          sliceCanvas.height = currentSlicePx
+          const ctx = sliceCanvas.getContext('2d')!
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height)
+          ctx.drawImage(canvas, 0, -yPx)
+          const sliceH_mm = (currentSlicePx * imgW) / canvas.width
+          if (!isFirst) pdf.addPage()
+          pdf.addImage(sliceCanvas.toDataURL('image/jpeg', JPEG_QUALITY), 'JPEG', margin, margin, imgW, sliceH_mm)
+          isFirst = false
+          yPx += currentSlicePx
+        }
+      }
       pdf.save(`رواتب-${r.month}.pdf`)
       document.body.removeChild(container)
     } catch (e) { console.error(e) }
   }
 
   return (
+    <>
     <div className="card p-0 overflow-hidden">
       <div className="px-4 py-2.5 flex items-center gap-2" style={{ borderBottom: '1px solid var(--inner-border)', background: 'var(--inner-bg)' }}>
         <span style={{ fontSize: 14 }}>💰</span>
@@ -873,6 +946,10 @@ function PayrollReportsList() {
         })}
       </div>
     </div>
+    <ConfirmDialog open={!!deleteRow} title="حذف تقرير الرواتب"
+      message={deleteRow ? `حذف تقرير رواتب شهر ${deleteRow.month} (${fmt(deleteRow.total_amount)} ج)؟\nسيُعاد المبلغ إلى الصندوق (عكس الخصم).` : ''}
+      danger onConfirm={() => { const r = deleteRow!; setDeleteRow(null); doDelete(r) }} onCancel={() => setDeleteRow(null)} />
+    </>
   )
 }
 
@@ -1196,6 +1273,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
   const [mains, setMains] = useState<MainCategory[]>([])
   const [subs, setSubsList] = useState<SubCategory[]>([])
   const [notes, setNotes] = useState('')
+  const [confirmApprovePending, setConfirmApprovePending] = useState(false)
 
   const [treasury, setTreasury] = useState<{ prevBalance: number; movements: { running: number }[] } | null>(null)
   useEffect(() => {
@@ -1463,11 +1541,16 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
 
   // اعتماد جماعي لكل الشيفتات غير المعتمدة بالشهر (مثلاً بعد استيراد إكسل) — تدخل الشيفتات المستوردة بحالة "مراجعة"
   // ولا تظهر في أرقام التقرير إلا بعد الاعتماد (قاعدة 1)، فبدل اعتماد كل شيفت يدويًا نوفّر زرًا جماعيًا هنا
-  async function approvePendingShifts() {
+  function approvePendingShifts() {
     if (!user) return
     const pending = shifts.filter(s => s.status !== 'approved')
     if (!pending.length) return
-    if (!confirm(`اعتماد ${pending.length} شيفت غير معتمد في هذا الشهر؟`)) return
+    setConfirmApprovePending(true)
+  }
+  async function doApprovePendingShifts() {
+    if (!user) return
+    const pending = shifts.filter(s => s.status !== 'approved')
+    if (!pending.length) return
     setBusy(true)
     try {
       for (const s of pending) await call(api.shifts.updateStatus(s.id, 'approved', user.id))
@@ -1631,6 +1714,7 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
   ]
 
   return (
+    <>
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="flex items-center gap-2 flex-wrap">
@@ -2021,5 +2105,10 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
         </div>
       </div>
     </div>
+    <ConfirmDialog open={confirmApprovePending} title="اعتماد الشيفتات المعلَّقة"
+      message={`اعتماد ${shifts.filter(s => s.status !== 'approved').length} شيفت غير معتمد في هذا الشهر؟`}
+      onConfirm={() => { setConfirmApprovePending(false); doApprovePendingShifts() }}
+      onCancel={() => setConfirmApprovePending(false)} />
+    </>
   )
 }

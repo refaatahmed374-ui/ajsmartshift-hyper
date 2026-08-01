@@ -5,7 +5,7 @@ import Modal from '../components/Modal'
 import Icons from '../components/Icon'
 
 interface BackupFile {
-  name: string; path: string; size: number; createdAt: string; type: 'auto' | 'manual'
+  name: string; path: string; size: number; createdAt: string; type: 'auto' | 'manual' | 'exit' | 'import'
 }
 
 function fmtSize(bytes: number): string {
@@ -139,6 +139,10 @@ export default function BackupPage() {
         <div className="flex gap-2">
           <button onClick={() => call(api.backup.openFolder())} className="btn-ghost btn-sm">
             <Icons.Records size={13} /> فتح المجلد
+          </button>
+          {/* بطلب العميل — استعادة فورية لآخر نسخة محفوظة بضغطة واحدة، بلا حاجة للبحث عنها في القائمة */}
+          <button onClick={() => lastBackup && setRestoring(lastBackup)} disabled={!lastBackup} className="btn-warning btn-sm" style={{ fontSize: 12 }}>
+            <Icons.Upload size={13} /> استعادة آخر نسخة احتياطية
           </button>
           <button onClick={handleCreate} disabled={creating} className="btn-success-pro btn-sm" style={{ fontSize: 12 }}>
             <Icons.Backup size={13} /> {creating ? 'جاري الحفظ...' : 'نسخة احتياطية الآن'}

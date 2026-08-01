@@ -14,6 +14,7 @@ import type {
 
 export interface ShiftClosingInput {
   posSales: number          // مبيعات POS
+  fawrySales: number        // مبيعات فوري + الربحية (تدخل درج الكاشير فعلياً — لازم تدخل معادلة العجز/الأوفر)
   cashierRemaining: number  // نقدية الكاشير (المتبقية في الدرج)
   cashierExpenses: number   // مصروفات الكاشير (منصرف البنود التي دفعها الكاشير)
   collections: number       // التحصيل (وارد فئة تحصيل)
@@ -23,11 +24,13 @@ export interface ShiftClosingResult { result: number; status: BalanceStatus }
 /**
  * نتيجة إغلاق الشيفت — المعادلة الرسمية الوحيدة (v2.34.33 — تصحيح: التحصيل كان يُضاف فيُحتسَب مرتين
  * لأن نقدية الكاشير أصلاً بتشمل أي تحصيل استلمه الكاشير خلال الشيفت؛ الصواب طرحه لعزله عن نقدية المبيعات):
- *   الإغلاق = (نقدية الكاشير + مصروفات الكاشير − التحصيل) − مبيعات POS
+ * (v2.38.2 — تصحيح: مبيعات فوري تدخل درج الكاشير فعلياً ولم تكن داخلة في المعادلة، فيظهر "متزن" وهمي
+ * رغم فرق حقيقي بين نقدية الكاشير واجمالي المبيعات كلما كانت مبيعات فوري غير صفرية)
+ *   الإغلاق = (نقدية الكاشير + مصروفات الكاشير − التحصيل) − (مبيعات POS + مبيعات فوري)
  * موجب ⇒ أوفر (surplus) · سالب ⇒ عجز (deficit) · صفر ⇒ مطابق (balanced)
  */
 export function calcShiftClosing(i: ShiftClosingInput): ShiftClosingResult {
-  const result = (i.cashierRemaining + i.cashierExpenses - i.collections) - i.posSales
+  const result = (i.cashierRemaining + i.cashierExpenses - i.collections) - (i.posSales + i.fawrySales)
   const status: BalanceStatus = result > 0 ? 'surplus' : result < 0 ? 'deficit' : 'balanced'
   return { result, status }
 }

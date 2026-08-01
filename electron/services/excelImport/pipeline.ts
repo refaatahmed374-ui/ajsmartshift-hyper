@@ -15,7 +15,7 @@ import {
   resolveEmployeeByName, getSalaryAdvanceSubCategoryId,
   type CategoryIndex,
 } from './valueMapping'
-import { normalizeValue } from './normalize'
+import { normalizeValue } from '../../../core/normalize'
 import { validateTransaction, type MappedTransaction } from './validator'
 import { buildDuplicateIndex, isDuplicate, findPriorImport, type PriorImport } from './duplicateChecker'
 import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses, updateCustody } from '../../database/repositories/shifts'

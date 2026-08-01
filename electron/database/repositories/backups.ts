@@ -1,8 +1,13 @@
-import { existsSync, readdirSync, statSync, copyFileSync, unlinkSync, readFileSync, writeFileSync } from 'fs'
-import { gzipSync, gunzipSync } from 'zlib'
+import { existsSync, readdirSync, statSync, copyFileSync, unlinkSync } from 'fs'
+import { readFile, writeFile } from 'fs/promises'
+import { gzip, gunzip } from 'zlib'
+import { promisify } from 'util'
 import { join } from 'path'
 import type Database from 'better-sqlite3'
 import { backupsDir, dbPath } from '../../paths'
+
+const gzipAsync = promisify(gzip)
+const gunzipAsync = promisify(gunzip)
 
 // مسار ملف قاعدة البيانات (المصدر) — من وحدة المسارات وليس من كائن db
 function srcDbPath(db: Database.Database): string {
@@ -14,7 +19,7 @@ export interface BackupFile {
   path:      string
   size:      number      // bytes
   createdAt: string      // ISO date
-  type:      'auto' | 'manual' | 'exit'
+  type:      'auto' | 'manual' | 'exit' | 'import'
 }
 
 export function getBackupDir(): string {
@@ -34,8 +39,9 @@ export function listBackups(): BackupFile[] {
         const filePath = join(dir, name)
         const stat = statSync(filePath)
         const type: BackupFile['type'] =
-          name.startsWith('auto-') ? 'auto' :
-          name.startsWith('exit-') ? 'exit' : 'manual'
+          name.startsWith('auto-')   ? 'auto' :
+          name.startsWith('exit-')   ? 'exit' :
+          name.startsWith('import-') ? 'import' : 'manual'
         return { name, path: filePath, size: stat.size, createdAt: stat.birthtime.toISOString(), type }
       })
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -45,12 +51,14 @@ export function listBackups(): BackupFile[] {
 }
 
 // إنشاء نسخة مضغوطة (gzip) — prefix يحدد النوع: '' يدوي، 'auto-'، 'exit-'
-export function createBackup(db: Database.Database, prefix = ''): string {
+// غير متزامن عمداً (v2.38.2): كانت readFileSync/gzipSync تحجب Main Process بالكامل أثناء ضغط قاعدة
+// بيانات كبيرة (تشمل أي عملية IPC، مثل فتح شيفت جديد) لثوانٍ — تحدث فوراً عند إقلاع البرنامج وكل 24 ساعة.
+export async function createBackup(db: Database.Database, prefix = ''): Promise<string> {
   const src = srcDbPath(db)
   const dir = getBackupDir()
   const dest = join(dir, `${prefix}backup-${nowStamp()}.db.gz`)
-  const raw  = readFileSync(src)
-  writeFileSync(dest, gzipSync(raw, { level: 9 }))
+  const raw  = await readFile(src)
+  await writeFile(dest, await gzipAsync(raw, { level: 9 }))
   return dest
 }
 
@@ -58,17 +66,17 @@ export function deleteBackup(filePath: string): void {
   if (existsSync(filePath)) unlinkSync(filePath)
 }
 
-export function restoreBackup(db: Database.Database, backupPath: string): void {
+export async function restoreBackup(db: Database.Database, backupPath: string): Promise<void> {
   if (!existsSync(backupPath)) throw new Error('ملف النسخة غير موجود')
   const dest = srcDbPath(db)
 
   // نسخة أمان من الوضع الحالي قبل الاستعادة (مضغوطة)
-  writeFileSync(join(getBackupDir(), `before-restore-${nowStamp()}.db.gz`), gzipSync(readFileSync(dest), { level: 9 }))
+  await writeFile(join(getBackupDir(), `before-restore-${nowStamp()}.db.gz`), await gzipAsync(await readFile(dest), { level: 9 }))
 
   // فكّ الضغط إن كانت مضغوطة
-  const data = readFileSync(backupPath)
-  const restored = backupPath.endsWith('.gz') ? gunzipSync(data) : data
-  writeFileSync(dest, restored)
+  const data = await readFile(backupPath)
+  const restored = backupPath.endsWith('.gz') ? await gunzipAsync(data) : data
+  await writeFile(dest, restored)
 }
 
 // ═══ v2.27.0 (14-Jun) — معلومات الذاكرة/التخزين ═══
@@ -115,13 +123,9 @@ export function cleanOldBackups(daysOld = 5): { deleted: number; freedBytes: num
   return { deleted, freedBytes }
 }
 
-// تنظيف النسخ القديمة — إبقاء آخر N من كل نوع تلقائي/خروج
-export function pruneBackups(keepAuto = 14, keepExit = 7): void {
-  const all = listBackups()
-  const prune = (type: BackupFile['type'], keep: number) => {
-    const list = all.filter(b => b.type === type)
-    list.slice(keep).forEach(b => { try { unlinkSync(b.path) } catch { /* ignore */ } })
-  }
-  prune('auto', keepAuto)
-  prune('exit', keepExit)
+// تنظيف النسخ القديمة — بطلب العميل (v2.38.6): سقف إجمالي واحد لكل النسخ غير اليدوية مجتمعة
+// (يومية + عند الخروج + قبل استيراد إكسيل)، يُبقي الأحدث فقط ويحذف الباقي. النسخ اليدوية مُستثناة دائماً.
+export function pruneBackups(keep = 5): void {
+  const nonManual = listBackups().filter(b => b.type !== 'manual')   // مُرتَّبة الأحدث أولاً بالفعل (listBackups)
+  nonManual.slice(keep).forEach(b => { try { unlinkSync(b.path) } catch { /* ignore */ } })
 }

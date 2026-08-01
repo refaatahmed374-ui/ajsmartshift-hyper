@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import type { Transaction, SmartLabel, MainCategory, SubCategory } from '../../../core/types'
 import { addLedgerEntry } from './parties'
 import { assertMonthUnlocked } from './treasury'
-import { normalizeArabic } from '../../services/excelImport/normalize'
+import { normalizeArabic } from '../../../core/normalize'
 import { CANONICAL_CATEGORIES } from '../canonicalCategories'
 
 // v2.34.26 — حارس التصنيفات: اعتماد التصنيفات الحالية (canonicalCategories.ts) كمرجع صحيح —
@@ -106,7 +106,7 @@ export function addTransaction(
   const id = res.lastInsertRowid as number
 
   // تحديث التسمية الذكية
-  updateSmartLabel(db, data.description, data.mainCategoryId, data.subCategoryId)
+  updateSmartLabel(db, data.description, data.mainCategoryId, data.subCategoryId, data.payMethod)
 
   // ═══ v2.27.0 — تسجيل في كشف حساب العميل تلقائياً ═══
   if (data.customerId) {
@@ -347,28 +347,43 @@ export function deleteSubCategory(
 }
 
 // ===== التسميات الذكية =====
+// v2.38.5 — بطلب العميل: توسيع الاقتراح ليشمل "طريقة الدفع" أيضاً — نتتبّع توزيعها الفعلي لكل نمط
+// بيان (كاشير/إدارة)، ونقترحها في suggestForDescription فقط لو نسبة الاتفاق التاريخي عالية.
 function updateSmartLabel(
   db: Database.Database,
   description: string,
   mainCatId: number | null,
-  subCatId: number | null
+  subCatId: number | null,
+  payMethod?: Transaction['payMethod']
 ): void {
   if (!description.trim() || mainCatId === null) return
   const pattern = description.trim().toLowerCase()
+  const cashierInc    = payMethod === 'cashier'    ? 1 : 0
+  const managementInc = payMethod === 'management' ? 1 : 0
   const existing = db.prepare(`SELECT id FROM smart_labels WHERE pattern = ?`).get(pattern) as { id: number } | undefined
   if (existing) {
-    db.prepare(`UPDATE smart_labels SET usage_count = usage_count + 1, last_used = datetime('now'), main_category_id=?, sub_category_id=? WHERE pattern=?`)
-      .run(mainCatId, subCatId, pattern)
+    db.prepare(`
+      UPDATE smart_labels SET usage_count = usage_count + 1, last_used = datetime('now'),
+        main_category_id=?, sub_category_id=?,
+        pay_cashier_count = pay_cashier_count + ?, pay_management_count = pay_management_count + ?
+      WHERE pattern=?
+    `).run(mainCatId, subCatId, cashierInc, managementInc, pattern)
   } else {
-    db.prepare(`INSERT INTO smart_labels (pattern, main_category_id, sub_category_id) VALUES (?, ?, ?)`)
-      .run(pattern, mainCatId, subCatId)
+    db.prepare(`
+      INSERT INTO smart_labels (pattern, main_category_id, sub_category_id, pay_cashier_count, pay_management_count)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(pattern, mainCatId, subCatId, cashierInc, managementInc)
   }
 }
+
+// نسبة الاتفاق الأدنى (٪) قبل اقتراح طريقة الدفع تلقائياً — "بنسبة كبيرة" بطلب العميل
+const PAY_METHOD_SUGGEST_THRESHOLD = 0.8
+const PAY_METHOD_SUGGEST_MIN_SAMPLES = 2
 
 export function suggestCategory(
   db: Database.Database,
   description: string
-): { mainCategoryId: number; subCategoryId: number | null } | null {
+): { mainCategoryId: number; subCategoryId: number | null; payMethod: Transaction['payMethod'] | null } | null {
   if (!description.trim()) return null
   const pattern = description.trim().toLowerCase()
 
@@ -385,9 +400,20 @@ export function suggestCategory(
   }
 
   if (!row) return null
+
+  const cashierCount    = (row.pay_cashier_count as number)    ?? 0
+  const managementCount = (row.pay_management_count as number) ?? 0
+  const total = cashierCount + managementCount
+  let payMethod: Transaction['payMethod'] | null = null
+  if (total >= PAY_METHOD_SUGGEST_MIN_SAMPLES) {
+    if (cashierCount / total >= PAY_METHOD_SUGGEST_THRESHOLD) payMethod = 'cashier'
+    else if (managementCount / total >= PAY_METHOD_SUGGEST_THRESHOLD) payMethod = 'management'
+  }
+
   return {
     mainCategoryId: row.main_category_id as number,
     subCategoryId:  row.sub_category_id as number | null,
+    payMethod,
   }
 }
 

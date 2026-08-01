@@ -34,9 +34,12 @@ export async function generateShiftReportPDF(s: Shift): Promise<void> {
   const collections = txs.filter(t => t.mainCategoryName === 'تحصيل').reduce((sm, t) => sm + t.amountIn, 0)
   const mgmtOut = txs.filter(t => t.payMethod === 'management').reduce((sm, t) => sm + t.amountOut, 0)
   const shiftExpenses = totalOut - mgmtOut
-  // ADR-012 v2 — المعادلة الرسمية: (نقدية الكاشير + مصروفات الكاشير + التحصيل) − مبيعات POS
+  // ADR-012 v2 — المعادلة الرسمية: (نقدية الكاشير + مصروفات الكاشير + التحصيل) − (مبيعات POS + مبيعات فوري)
   const cashierExpenses = txs.filter(t => t.payMethod === 'cashier' && t.mainCategoryName !== 'تحصيل').reduce((sm, t) => sm + t.amountIn + t.amountOut, 0)
-  const { result, status } = calcShiftClosing({ posSales: s.posSales ?? 0, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
+  // v2.38.3 — للشيفتات المستورَدة من الإكسل: "مبيعات POS" الأصلية في الشيت كانت أصلاً شاملة "مبيعات البرنامج"
+  // (programSales)، فإضافتها هنا كانت تُحتسَب مرتين. fawryTotalManual (الإدخال اليدوي الحي) فقط يدخل معادلة التقفيل.
+  const fawrySales = fawry?.fawryTotalManual ?? 0
+  const { result, status } = calcShiftClosing({ posSales: s.posSales ?? 0, fawrySales, cashierRemaining: s.cashierRemaining ?? 0, cashierExpenses, collections })
   const resultColor = status === 'surplus' ? '#10b981' : status === 'deficit' ? '#ef4444' : '#f59e0b'
   const resultLabel = status === 'surplus' ? 'أوفر' : status === 'deficit' ? 'عجز' : 'مطابق'
 

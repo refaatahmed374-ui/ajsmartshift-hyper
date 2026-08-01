@@ -101,12 +101,14 @@ CREATE TABLE IF NOT EXISTS sub_categories (
 
 -- ===== التسميات الذكية =====
 CREATE TABLE IF NOT EXISTS smart_labels (
-  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-  pattern          TEXT NOT NULL UNIQUE,
-  main_category_id INTEGER NOT NULL REFERENCES main_categories(id),
-  sub_category_id  INTEGER REFERENCES sub_categories(id),
-  usage_count      INTEGER NOT NULL DEFAULT 1,
-  last_used        TEXT NOT NULL DEFAULT (datetime('now'))
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  pattern               TEXT NOT NULL UNIQUE,
+  main_category_id      INTEGER NOT NULL REFERENCES main_categories(id),
+  sub_category_id       INTEGER REFERENCES sub_categories(id),
+  usage_count           INTEGER NOT NULL DEFAULT 1,
+  last_used             TEXT NOT NULL DEFAULT (datetime('now')),
+  pay_cashier_count     INTEGER NOT NULL DEFAULT 0,
+  pay_management_count  INTEGER NOT NULL DEFAULT 0
 );
 
 -- ===== البنود غير المعروفة =====
