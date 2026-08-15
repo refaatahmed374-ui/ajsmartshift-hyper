@@ -213,14 +213,25 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
 
   async function doApproveShift() {
     if (!user) return
-    try { await call(api.shifts.updateStatus(shiftId, 'approved', user.id)); await load(); onChanged?.(); toast.show('تم اعتماد الشيفت', 'success') }
+    try {
+      // إصلاح — احفظ بنود اليومية المكتملة أولاً ثم اعتمد. كان الاعتماد يقفل الشيفت بلا حفظ البنود:
+      // بيانات فوري/التقفيل كانت تنجو لأنها تُحفظ لحظيًا عند الإدخال، أما بنود الجدول (drafts) فتُفقد.
+      // اكتمال كل بند (بيان + قيمة + تصنيف + طريقة دفع) وخلوّ الجدول من بند ناقص مضمونان مسبقًا في
+      // checkMissingItems قبل فتح حوار التأكيد، فما يُحفظ هنا مكتمل دائمًا (الخيار الأأمن: لا اعتماد ببند ناقص).
+      const saved = await persistFilledDrafts()
+      await call(api.shifts.updateStatus(shiftId, 'approved', user.id))
+      // البنود المحفوظة بقت ضمن txs بعد load — فرّغ المسودة كي لا تتكرر بصريًا
+      if (saved) setDrafts(rows(DEFAULT_ROWS - (txs.length + saved)))
+      await load(); onChanged?.()
+      toast.show(saved ? `تم اعتماد الشيفت وحُفظ ${saved} بند` : 'تم اعتماد الشيفت', 'success')
+    }
     catch (e) { toast.show((e as Error).message, 'error') }
   }
   function approveShift() {
     if (!user) return
     const missing = checkMissingItems()
     if (missing.length > 0) { setMissingItems(missing); return }
-    setConfirmDlg({ title: 'اعتماد الشيفت', message: 'اعتماد وإغلاق الشيفت؟ (البيانات محفوظة بالفعل)', onConfirm: doApproveShift })
+    setConfirmDlg({ title: 'اعتماد الشيفت', message: 'سيتم حفظ كل البنود ثم إغلاق الشيفت واعتماده نهائيًا. متابعة؟', onConfirm: doApproveShift })
   }
 
   async function delTx(id: number) {
@@ -302,6 +313,23 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
     }, 450))
   }
 
+  // يحفظ بنود المسودة المكتملة (بيان + قيمة + طريقة دفع) في قاعدة البيانات دفعة واحدة، ويرجع عددها.
+  // لا يعرض أي رسالة ولا يعيد تهيئة الصفوف — يترك ذلك للمُنادي (زر الحفظ / اعتماد الشيفت / حوار الإغلاق)
+  // ليختار الرسالة والسلوك المناسبين لسياقه. (مستخرَج من commitDrafts لإعادة استخدامه في مسار الاعتماد)
+  async function persistFilledDrafts(): Promise<number> {
+    if (!journal) return 0
+    const filled = drafts.filter(d => d.description.trim() && d.amount && d.payMethod)
+    if (!filled.length) return 0
+    const collectId = mains.find(m => m.name === 'تحصيل')?.id ?? -1
+    await call(api.tx.addBatch(filled.map(d => ({
+      shiftId, journalId: journal.id, description: d.description,
+      mainCategoryId: d.mainCategoryId || null, subCategoryId: d.subCategoryId || null,
+      amountIn: d.mainCategoryId === collectId ? parsePias(d.amount) : 0, amountOut: d.mainCategoryId === collectId ? 0 : parsePias(d.amount),
+      payMethod: d.payMethod, employeeId: isAdvanceRow(d.mainCategoryId, d.subCategoryId) ? (d.employeeId || null) : null, customerId: null, note: '', createdBy: user?.id ?? 1,
+    }))))
+    return filled.length
+  }
+
   async function commitDrafts() {
     if (!journal) return
     // v2.34.18 — بند بدون طريقة دفع مُختارة يُعامَل كغير مكتمل (لا يُحفظ) تمامًا كبند بدون بيان/قيمة
@@ -312,13 +340,7 @@ export default function ShiftSheet({ shiftId, onClose, onDeleted, onChanged, emb
       return
     }
     try {
-      const collectId = mains.find(m => m.name === 'تحصيل')?.id ?? -1
-      await call(api.tx.addBatch(filled.map(d => ({
-        shiftId, journalId: journal.id, description: d.description,
-        mainCategoryId: d.mainCategoryId || null, subCategoryId: d.subCategoryId || null,
-        amountIn: d.mainCategoryId === collectId ? parsePias(d.amount) : 0, amountOut: d.mainCategoryId === collectId ? 0 : parsePias(d.amount),
-        payMethod: d.payMethod, employeeId: isAdvanceRow(d.mainCategoryId, d.subCategoryId) ? (d.employeeId || null) : null, customerId: null, note: '', createdBy: user?.id ?? 1,
-      }))))
+      await persistFilledDrafts()
       // ADR-012 v2 — بعد الحفظ: أعِد صفوفاً فارغة فقط حتى إجمالي 14 (لا تُنشئ صفوفاً إضافية تلقائياً)
       const newTotal = txs.length + filled.length
       setDrafts(rows(DEFAULT_ROWS - newTotal))
