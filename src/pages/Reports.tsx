@@ -770,7 +770,10 @@ function JournalReport({ shifts, allTxs, fawryMap, month, bizName: _bizName, onR
           onClick={() => setSheetId(null)}>
           <div className="card" style={{ width: '96vw', maxWidth: 1440, height: '92vh', padding: 0, overflow: 'hidden' }}
             onClick={e => e.stopPropagation()}>
-            <ShiftSheet shiftId={sheetId} onClose={() => setSheetId(null)} onDeleted={() => { setSheetId(null); onReload() }} />
+            {/* onChanged مطلوب — بدونه كان تعديل ملخّص الشيفت (POS/فوري/نقدية) داخل المودال لا يُحدّث
+                بطاقة العجز/الأوفر في سجل اليوميات (تُحسب من حالة الأب shifts/fawryMap) إلا بعد إعادة تحميل الشهر.
+                onReload = load() يعيد جلب shifts + allTxs + fawryMap، فتنعكس القيمة لحظيًا (كما في Daily.tsx). */}
+            <ShiftSheet shiftId={sheetId} onChanged={onReload} onClose={() => setSheetId(null)} onDeleted={() => { setSheetId(null); onReload() }} />
           </div>
         </div>
       )}
