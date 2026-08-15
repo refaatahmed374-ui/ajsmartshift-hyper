@@ -134,9 +134,15 @@ export default function Employees() {
   const [paidEmps,      setPaidEmps]      = useState<Record<number, boolean>>({})
   const [payrollDone,   setPayrollDone]   = useState(false)
   const [confirmingPay, setConfirmingPay] = useState(false)
+  // بطلب العميل — الشهور التي صُرفت رواتبها بالفعل (تقرير رواتب محفوظ) لمنع تقفيل/دفع نفس الشهر مرتين
+  const [paidMonths,    setPaidMonths]    = useState<Set<string>>(new Set())
+  const monthAlreadyPaid = paidMonths.has(month)
 
   function openPayout() {
     if (financials.length === 0) { show('لا يوجد موظفون', 'warning'); return }
+    // بطلب العميل — منع الدفع المكرّر: لو الشهر سبق تقفيله ودُفعت رواتبه، أظهر رسالة ولا تفتح مودال الدفع
+    // (قبل الإصلاح كان يُخصم من الخزينة ويُحفظ تقرير مكرّر لنفس الشهر بلا أي مانع)
+    if (monthAlreadyPaid)        { show(`سبق تقفيل شهر ${month} ودفع رواتب موظفيه — لا يمكن الدفع مرة أخرى لنفس الشهر`, 'warning'); return }
     if (payrollTotal <= 0)       { show('لا توجد رواتب مستحقة', 'warning'); return }
     setPaidEmps({}); setPayrollDone(false); setPayoutOpen(true)
   }
@@ -149,6 +155,14 @@ export default function Employees() {
   async function confirmPayroll() {
     setConfirmingPay(true)
     try {
+      // حارس نهائي ضد التكرار — تحقّق حيّ من قاعدة البيانات قبل الخصم/الحفظ (يمنع السباق أو حالة قديمة في الواجهة)
+      const existing = await call(api.payroll.list()) as { month: string }[]
+      if (existing.some(r => r.month === month)) {
+        setPaidMonths(new Set(existing.map(r => r.month)))
+        show(`سبق تقفيل شهر ${month} ودفع رواتب موظفيه`, 'warning')
+        setPayoutOpen(false)
+        return
+      }
       const details = financials.filter(f => dueSalary(f) > 0).map(f => ({
         name: f.name,
         mode: getSalaryMode(f.employeeId),
@@ -171,6 +185,7 @@ export default function Employees() {
       }))
       show('✓ تم تسليم الرواتب وحفظ التقرير', 'success')
       setPayoutOpen(false)
+      setPaidMonths(prev => new Set(prev).add(month)) // حدّث الحارس فورًا فلا يُدفع الشهر ثانيةً بلا إعادة تحميل
     } catch (e) { show((e as Error).message, 'error') }
     finally { setConfirmingPay(false) }
   }
@@ -256,10 +271,17 @@ export default function Employees() {
   async function loadFinancials() {
     setFinancials(await call(api.emp.financials(month)) as EmployeeFinancials[])
   }
+  // بطلب العميل — تحميل الشهور التي حُفظ لها تقرير رواتب (مدفوعة/مقفَّلة) لمنع الدفع المكرّر لنفس الشهر
+  async function loadPaidMonths() {
+    try {
+      const reports = await call(api.payroll.list()) as { month: string }[]
+      setPaidMonths(new Set(reports.map(r => r.month)))
+    } catch { /* لو فشل التحميل يبقى الحارس النهائي داخل confirmPayroll هو خط الدفاع الأخير */ }
+  }
 
   useEffect(() => { loadEmployees() }, [])
   useEffect(() => {
-    if (tab === 'financial') loadFinancials()
+    if (tab === 'financial') { loadFinancials(); loadPaidMonths() }
   }, [tab, month])
 
   // ===== إضافة/تعديل موظف =====
