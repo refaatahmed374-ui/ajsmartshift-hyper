@@ -673,6 +673,23 @@ const MIGRATIONS = [
   // نتتبّع توزيع طريقة الدفع الفعلية لكل نمط بيان، ونقترحها فقط لو نسبة الاتفاق عالية (٪ كبيرة)
   `ALTER TABLE smart_labels ADD COLUMN pay_cashier_count    INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE smart_labels ADD COLUMN pay_management_count INTEGER NOT NULL DEFAULT 0`,
+
+  // ربط قيد كشف الحساب بالبند الذي وَلَّده. بدونه كان حذف/تعديل بند آجل أو تحصيل يترك قيداً
+  // يتيماً في كشف حساب العميل إلى الأبد (دين وهمي لا يمكن إزالته إلا يدوياً).
+  `ALTER TABLE party_ledger ADD COLUMN transaction_id INTEGER REFERENCES transactions(id)`,
+  `CREATE INDEX IF NOT EXISTS idx_party_ledger_tx ON party_ledger(transaction_id)`,
+  // ربط القيود المولَّدة آلياً سابقاً (قبل وجود العمود) ببنودها، بمطابقة الوصف والمبلغ والعميل —
+  // حتى تستفيد البيانات القائمة من الحذف/التحديث المتتالي الجديد. لا يُحذف أي قيد هنا عمداً:
+  // القيد الذي يتعذّر ربطه قد يكون يدوياً أو مُعدَّل الوصف، وحذف قيد محاسبي بالتخمين غير مقبول.
+  `UPDATE party_ledger SET transaction_id = (
+       SELECT t.id FROM transactions t
+       WHERE t.customer_id = party_ledger.party_id
+         AND (t.amount_in + t.amount_out) = (party_ledger.debit + party_ledger.credit)
+         AND party_ledger.description IN (
+               '[شيفت #' || t.shift_id || '] ' || t.description,
+               '[شيفت #' || t.shift_id || '] تحصيل: ' || t.description)
+       ORDER BY t.id LIMIT 1)
+     WHERE transaction_id IS NULL AND party_type = 'customer' AND description LIKE '[شيفت #%'`,
 ]
 
 let _db: Database.Database | null = null
@@ -794,6 +811,9 @@ export function closeDb(): void {
 const BUSINESS_TABLES = [
   'transactions', 'journals', 'shift_fawry', 'shift_custody', 'shifts',
   'employee_attendance', 'attendance', 'treasury_adjustments',
+  // نقاط ارتكاز الصندوق بيانات محاسبية بحتة — كانت مفقودة من القائمة، فيبقى بعد "محو كل شيء"
+  // رصيد صندوق افتتاحي موروث من بيانات ممحوّة يُفسد كل حسابات الخزينة اللاحقة
+  'treasury_checkpoints', 'party_ledger',
   'payroll_reports', 'monthly_close_reports', 'sync_queue',
   'notifications', 'party_ledger', 'customers', 'suppliers', 'employees',
   'smart_labels', 'unknown_labels', 'import_history', 'import_employee_map',

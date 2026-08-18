@@ -18,7 +18,7 @@ import {
 import { normalizeValue } from '../../../core/normalize'
 import { validateTransaction, type MappedTransaction } from './validator'
 import { buildDuplicateIndex, isDuplicate, findPriorImport, type PriorImport } from './duplicateChecker'
-import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses, updateCustody } from '../../database/repositories/shifts'
+import { createShift, getJournalByShift, updateFawry, updateShiftCloseInputs, updateShiftStatus, overrideShiftExpenses, updateCustody, recalcShiftClosingTotals } from '../../database/repositories/shifts'
 import { addTransactionsBatch } from '../../database/repositories/transactions'
 import { addTreasuryCheckpoint, getBalanceAsOf } from '../../database/repositories/treasury'
 import type { ShiftType, ShiftFawry } from '../../../core/types'
@@ -276,11 +276,17 @@ export function runImport(db: Database, workbook: Workbook, opts: ImportOptions)
       if (Object.keys(fawryPatch).length) updateFawry(db, shift.id, fawryPatch)
 
       // 5) POS + نقدية الكاشير (G/H) — «إجمالي مبيعات» → POS (#4)
-      if (b.closing.posSales !== undefined || b.closing.cashierRemaining !== undefined)
-        updateShiftCloseInputs(db, shift.id, {
-          posSales: Math.round((b.closing.posSales ?? 0) * 100),
-          cashierRemaining: Math.round((b.closing.cashierRemaining ?? 0) * 100),
-        })
+      // يُمرَّر الحقل الموجود في الشيت فقط: تمرير `?? 0` للحقل الغائب كان يدهس القيمة بصفر.
+      // وتُستدعى إعادة الاحتساب دائماً لأن الشيفت المستورَد لا يمرّ بـ`closeShift` إطلاقاً،
+      // فكان التحصيل ومصروفات الكاشير يبقيان صفراً إن خلا الشيت من خانتَي التقفيل.
+      if (b.closing.posSales !== undefined || b.closing.cashierRemaining !== undefined) {
+        const closeInputs: { posSales?: number; cashierRemaining?: number } = {}
+        if (b.closing.posSales !== undefined) closeInputs.posSales = Math.round(b.closing.posSales * 100)
+        if (b.closing.cashierRemaining !== undefined) closeInputs.cashierRemaining = Math.round(b.closing.cashierRemaining * 100)
+        updateShiftCloseInputs(db, shift.id, closeInputs)
+      } else {
+        recalcShiftClosingTotals(db, shift.id)
+      }
 
       // 5ب) العهدة (G/H) — «اضافي عهدة» → عهدة مستلمة، «ادارة» → عهدة منصرفة (متبقي العهدة يُحسب تلقائياً في المحرّك، معلوماتي فقط)
       if (b.closing.custodyAdd !== undefined || b.closing.custodyManagement !== undefined)

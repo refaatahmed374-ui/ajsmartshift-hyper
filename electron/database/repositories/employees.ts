@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3'
 import type { Employee, Attendance, AttendanceStatus, EmployeeFinancials } from '../../../core/types'
 import { normalizeValue } from '../../../core/normalize'
 import { similarity } from '../../../core/similarity'
+import { localISO } from '../../../core/date'
 
 function row2emp(r: Record<string, unknown>): Employee {
   return {
@@ -164,8 +165,23 @@ export function getAttendanceMonth(db: Database.Database, employeeId: number, mo
 }
 
 // ===== الحسابات المالية الشهرية لكل الموظفين =====
+// موظفو كشف رواتب شهر معيّن: النشطون + كل من له أثر فعلي في هذا الشهر (حضور أو سلفة) ولو
+// أصبحت حالته 'inactive' لاحقاً. (كانت الدالة تقتصر على النشطين، فموظف ترك العمل يوم 20 من
+// الشهر كان يختفي كلياً من كشف رواتبه ويضيع مستحقّه عن أيام عمله الفعلية.)
+function employeesForMonth(db: Database.Database, month: string): Employee[] {
+  const rows = db.prepare(`
+    SELECT * FROM employees e
+    WHERE e.status = 'active'
+       OR EXISTS (SELECT 1 FROM attendance a WHERE a.employee_id = e.id AND a.date LIKE ?)
+       OR EXISTS (SELECT 1 FROM transactions t JOIN shifts s ON s.id = t.shift_id
+                  WHERE t.employee_id = e.id AND s.date LIKE ?)
+    ORDER BY e.name
+  `).all(`${month}%`, `${month}%`) as Record<string, unknown>[]
+  return rows.map(row2emp)
+}
+
 export function getMonthlyFinancials(db: Database.Database, month: string): EmployeeFinancials[] {
-  const emps = getActiveEmployees(db)
+  const emps = employeesForMonth(db, month)
   return emps.map(emp => {
     // الحضور
     const att = db.prepare(
@@ -318,11 +334,17 @@ function fillAttendanceDay(db: Database.Database, employeeId: number, date: stri
 // بطلب العميل — يملأ الشهر كاملاً (اليوم 1 حتى آخر يوم فيه أو اليوم الحالي أيهما أقرب) بعدد الساعات الافتراضي
 // المُدخَل عند تسجيل الموظف، اعتباراً بأنه عمل طوال الشهر ما لم يوجد سجل حضور فعلي يقول غير ذلك.
 function fillAttendanceForMonth(db: Database.Database, employeeId: number, monthStr: string, workHoursHundredths: number): void {
-  const todayStr = new Date().toISOString().slice(0, 10)
+  // التقويم المحلي لا UTC — `toISOString()` كان يرجع تاريخ الأمس ليلاً فيسقط يوم من التعبئة
+  const todayStr = localISO()
+  // حدود خدمة الموظف: لا يُفبرَك حضور قبل تاريخ تعيينه ولا بعد تاريخ تركه العمل
+  // (كانت التعبئة تشمل الشهر كاملاً بلا أي اعتبار لهما، فينتفخ `dueSalary` بأيام لم يكن موظفاً فيها أصلاً)
+  const emp = getEmployeeById(db, employeeId)
   const lastDay = daysInMonth(monthStr)
   for (let d = 1; d <= lastDay; d++) {
     const dateStr = `${monthStr}-${String(d).padStart(2, '0')}`
     if (dateStr > todayStr) break
+    if (emp?.startDate && dateStr < emp.startDate) continue
+    if (emp?.endDate   && dateStr > emp.endDate)   break
     fillAttendanceDay(db, employeeId, dateStr, workHoursHundredths)
   }
 }

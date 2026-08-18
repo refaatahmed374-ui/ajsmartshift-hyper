@@ -1,10 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import Icons from './Icon'
 import { useAuth } from '../store/auth'
 import { useShift } from '../store/shift'
 import { useLicense } from '../store/license'
 import { usePageAccess } from '../store/pageAccess'
-import { api, call } from '../lib/api'
 import type { Page } from '../App'
 
 interface NavItem {
@@ -60,14 +59,6 @@ export default function Sidebar({ current, onChange }: Props) {
   const { activeShift } = useShift()
   const { hasFeature }  = useLicense()
   const [collapsed,     setCollapsed]     = useState(false)
-  const [unreadCount,   setUnreadCount]   = useState(0)
-
-  useEffect(() => {
-    const tick = () => call(api.notif.unreadCount()).then(n => setUnreadCount(n as number)).catch(() => {})
-    tick()
-    const id = setInterval(tick, 30_000)
-    return () => clearInterval(id)
-  }, [])
 
   const featureOf: Partial<Record<Page, 'reports' | 'crm'>> = {
     reports: 'reports', customers: 'crm', suppliers: 'crm',
@@ -157,8 +148,6 @@ export default function Sidebar({ current, onChange }: Props) {
         <div className={collapsed ? 'flex flex-col gap-1' : 'flex flex-col gap-1'}>
           {items.map(item => {
             const active    = current === item.id
-            const isNotif   = item.id === 'notifications'
-            const badge     = isNotif && unreadCount > 0 ? unreadCount : 0
             const iconClass = ICON_CLASS[item.id] ?? ''
             return (
               <button key={item.id}
@@ -174,37 +163,15 @@ export default function Sidebar({ current, onChange }: Props) {
                   <span className="aj-active-stripe absolute right-0 top-1/2 -translate-y-1/2 w-1 h-6 rounded-l-full" />
                 )}
 
-                {/* الأيقونة + badge */}
+                {/* الأيقونة */}
                 <span className={`${iconClass} flex-shrink-0 relative transition-transform duration-200
                   ${active ? 'scale-110' : ''}`}>
                   {item.icon}
-                  {badge > 0 && collapsed && (
-                    <span className="absolute -top-1.5 -left-1.5 min-w-[16px] h-4 rounded-full
-                      text-white flex items-center justify-center font-bold leading-none"
-                      style={{
-                        background: '#ef4444', fontSize: 9, padding: '0 4px',
-                        boxShadow: '0 2px 6px rgba(239,68,68,0.5)',
-                      }}>
-                      {badge > 9 ? '9+' : badge}
-                    </span>
-                  )}
                 </span>
                 {!collapsed && (
                   <span className="truncate flex-1"
                     style={{ fontSize: 14.5, fontWeight: active ? 700 : 600 }}>
                     {item.label}
-                  </span>
-                )}
-                {/* badge في الجانب المفتوح */}
-                {!collapsed && badge > 0 && (
-                  <span className="text-2xs rounded-full font-bold leading-none flex items-center justify-center"
-                    style={{
-                      background: '#ef4444', color: 'white',
-                      minWidth: 18, height: 18, padding: '0 5px',
-                      fontSize: 10,
-                      boxShadow: '0 2px 6px rgba(239,68,68,0.45)',
-                    }}>
-                    {badge > 9 ? '9+' : badge}
                   </span>
                 )}
               </button>

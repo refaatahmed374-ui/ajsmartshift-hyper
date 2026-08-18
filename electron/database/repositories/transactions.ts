@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { Transaction, SmartLabel, MainCategory, SubCategory } from '../../../core/types'
-import { addLedgerEntry } from './parties'
+import { addLedgerEntry, deleteLedgerEntriesByTransaction } from './parties'
 import { assertMonthUnlocked } from './treasury'
 import { normalizeArabic } from '../../../core/normalize'
 import { CANONICAL_CATEGORIES } from '../canonicalCategories'
@@ -72,6 +72,67 @@ export function getTransactionsByShiftIds(db: Database.Database, shiftIds: numbe
 
 
 
+/**
+ * يُعيد توليد قيود كشف حساب العميل الخاصة ببند يومية واحد (حذف ثم إنشاء).
+ *
+ * كانت هذه المنطقة مكتوبة داخل `addTransaction` فقط، فينتج عنها خطآن:
+ *  1) القيد يُنشأ بتاريخ **اليوم** لا بتاريخ الشيفت — فبند آجل لشيفت قديم (أو مستورد من إكسل)
+ *     يظهر في كشف الحساب بتاريخ الاستيراد لا بتاريخ البيع الحقيقي.
+ *  2) لا يوجد أي ربط بين القيد والبند، فالحذف/التعديل كانا يتركان قيداً يتيماً (دين وهمي دائم).
+ * الآن القيد مرتبط بـ`transaction_id` ويُعاد توليده كلياً عند أي تعديل.
+ */
+export function syncCustomerLedger(db: Database.Database, txId: number): void {
+  try {
+    deleteLedgerEntriesByTransaction(db, txId)
+
+    const tx = db.prepare(`
+      SELECT t.shift_id AS shiftId, t.customer_id AS customerId, t.description AS description,
+             t.amount_in AS amountIn, t.amount_out AS amountOut,
+             s.date AS shiftDate, mc.name AS mainName, sc.name AS subName
+      FROM transactions t
+      JOIN shifts s ON s.id = t.shift_id
+      LEFT JOIN main_categories mc ON mc.id = t.main_category_id
+      LEFT JOIN sub_categories  sc ON sc.id = t.sub_category_id
+      WHERE t.id = ?
+    `).get(txId) as {
+      shiftId: number; customerId: number | null; description: string
+      amountIn: number; amountOut: number; shiftDate: string
+      mainName: string | null; subName: string | null
+    } | undefined
+
+    if (!tx || !tx.customerId) return
+
+    const customerExists = db.prepare(`SELECT id FROM customers WHERE id = ?`).get(tx.customerId)
+    if (!customerExists) {
+      console.warn(`[ledger] customer ${tx.customerId} not found, skipping ledger entry`)
+      return
+    }
+
+    // تاريخ القيد = تاريخ الشيفت (لا تاريخ اليوم) حتى يستقرّ كشف الحساب زمنياً مهما تأخّر الإدخال
+    const date = tx.shiftDate
+    // الآجل يُحدَّد بالتصنيف الفرعي «مبيعات آجل» لا بطريقة الدفع (ADR-012 v2)
+    if (tx.subName === 'مبيعات آجل') {
+      // بيع آجل → دين على العميل (مدين)
+      addLedgerEntry(db, {
+        partyType: 'customer', partyId: tx.customerId, date,
+        description: `[شيفت #${tx.shiftId}] ${tx.description}`,
+        debit: tx.amountOut > 0 ? tx.amountOut : tx.amountIn, credit: 0,
+        transactionId: txId,
+      })
+    } else if (tx.mainName === 'تحصيل') {
+      // تحصيل → سداد العميل (دائن)
+      addLedgerEntry(db, {
+        partyType: 'customer', partyId: tx.customerId, date,
+        description: `[شيفت #${tx.shiftId}] تحصيل: ${tx.description}`,
+        debit: 0, credit: tx.amountIn > 0 ? tx.amountIn : tx.amountOut,
+        transactionId: txId,
+      })
+    }
+  } catch (e) {
+    console.error('[ledger] Error syncing ledger entry:', e)
+  }
+}
+
 export function addTransaction(
   db: Database.Database,
   data: {
@@ -109,51 +170,7 @@ export function addTransaction(
   updateSmartLabel(db, data.description, data.mainCategoryId, data.subCategoryId, data.payMethod)
 
   // ═══ v2.27.0 — تسجيل في كشف حساب العميل تلقائياً ═══
-  if (data.customerId) {
-    try {
-      // جلب اسم التصنيف الرئيسي لتحديد نوع الحركة
-      const mainName = data.mainCategoryId ? (db.prepare(
-        `SELECT name FROM main_categories WHERE id = ?`
-      ).get(data.mainCategoryId) as { name: string } | undefined)?.name : null
-      // الآجل يُحدَّد بالتصنيف الفرعي «مبيعات آجل» لا بطريقة الدفع (ADR-012 v2)
-      const subName = data.subCategoryId ? (db.prepare(
-        `SELECT name FROM sub_categories WHERE id = ?`
-      ).get(data.subCategoryId) as { name: string } | undefined)?.name : null
-      const today = new Date().toISOString().slice(0, 10)
-
-      // التحقق من أن العميل موجود
-      const customerExists = db.prepare(`SELECT id FROM customers WHERE id = ?`).get(data.customerId)
-      if (!customerExists) {
-        console.warn(`[ledger] customer ${data.customerId} not found, skipping ledger entry`)
-      } else if (subName === 'مبيعات آجل') {
-        // بيع آجل → دين على العميل (مدين)
-        const amount = data.amountOut > 0 ? data.amountOut : data.amountIn
-        addLedgerEntry(db, {
-          partyType: 'customer', partyId: data.customerId,
-          date: today,
-          description: `[شيفت #${data.shiftId}] ${data.description}`,
-          debit:  amount,
-          credit: 0,
-        })
-        console.log(`[ledger] credit debit added: customer ${data.customerId}, amount ${amount}`)
-      } else if (mainName === 'تحصيل') {
-        // تحصيل → سداد العميل (دائن)
-        const amount = data.amountIn > 0 ? data.amountIn : data.amountOut
-        addLedgerEntry(db, {
-          partyType: 'customer', partyId: data.customerId,
-          date: today,
-          description: `[شيفت #${data.shiftId}] تحصيل: ${data.description}`,
-          debit:  0,
-          credit: amount,
-        })
-        console.log(`[ledger] collection credit added: customer ${data.customerId}, amount ${amount}`)
-      } else {
-        console.warn(`[ledger] customer ${data.customerId} set but no matching condition (payMethod=${data.payMethod}, mainName=${mainName})`)
-      }
-    } catch (e) {
-      console.error('[ledger] Error adding ledger entry:', e)
-    }
-  }
+  syncCustomerLedger(db, id)
 
   return row2tx(
     db.prepare(`${TX_SELECT} WHERE t.id = ?`).get(id) as Record<string, unknown>
@@ -191,11 +208,16 @@ export function updateTransaction(
   const shiftDate = shiftDateOfTx(db, id)
   if (shiftDate) assertMonthUnlocked(db, shiftDate)
   db.prepare(`UPDATE transactions SET ${sets.join(', ')} WHERE id = ?`).run(...vals, id)
+  // إعادة مزامنة كشف حساب العميل: تغيير المبلغ/العميل/التصنيف كان يترك القيد القديم بقيمته
+  // القديمة (أو على العميل القديم) بلا أي تحديث
+  syncCustomerLedger(db, id)
 }
 
 export function deleteTransaction(db: Database.Database, id: number): void {
   const shiftDate = shiftDateOfTx(db, id)
   if (shiftDate) assertMonthUnlocked(db, shiftDate)
+  // قيود كشف الحساب أولاً (قبل اختفاء البند) وإلا بقيت يتيمة كديون وهمية على العميل
+  deleteLedgerEntriesByTransaction(db, id)
   db.prepare(`DELETE FROM transactions WHERE id = ?`).run(id)
 }
 

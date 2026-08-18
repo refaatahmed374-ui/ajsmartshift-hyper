@@ -30,7 +30,6 @@ const api = {
     updateCloseInputs: (id: number, data: unknown)       => ipcRenderer.invoke('shifts:updateCloseInputs', id, data),
     updateMeta:        (id: number, data: unknown)       => ipcRenderer.invoke('shifts:updateMeta', id, data),
     delete:        (id: number)                          => ipcRenderer.invoke('shifts:delete', id),
-    close:        (id: number, cash: number, posSales: number, cashierRemaining: number) => ipcRenderer.invoke('shifts:close', id, cash, posSales, cashierRemaining),
   },
 
   // فوري

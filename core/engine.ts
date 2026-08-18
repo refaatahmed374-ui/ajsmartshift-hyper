@@ -76,11 +76,11 @@ export function calcCustody(c: ShiftCustody): CustodyResult {
 }
 
 // ===== 3. رقم الشيفت الشهري =====
-// يُحسب من عدد الشيفتات في نفس الشهر الميلادي + 1
-export function calcMonthlyShiftNum(
-  shiftsThisMonth: { id: number }[]
-): number {
-  return shiftsThisMonth.length + 1
+// أكبر رقم مستخدَم في نفس الشهر الميلادي + 1.
+// (كان يُحسب من **عدد** الشيفتات + 1، فيتكرر الرقم بعد أي حذف: شيفتات 1,2,3 ← حذف #2 ←
+//  العدد 2 ← الشيفت التالي يأخذ #3 مكرراً، ومعه رقم يومية `J-YYYYMMDD-NN` مكرر أيضاً.)
+export function calcMonthlyShiftNum(existingNums: number[]): number {
+  return existingNums.reduce((mx, n) => Math.max(mx, n), 0) + 1
 }
 
 // ===== 4. تحديد نوع الشيفت تلقائياً =====

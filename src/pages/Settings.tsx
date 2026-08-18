@@ -24,10 +24,14 @@ export default function Settings() {
 
   async function loadThreshold() {
     const v = await call(api.settings.get('alert_threshold'))
-    if (v) setThreshold(String(parseInt(String(v)) / 100))
+    const n = Number(v)
+    if (Number.isFinite(n)) setThreshold(String(n / 100))
   }
   async function saveThreshold() {
-    await call(api.settings.set('alert_threshold', String(Math.round(parseFloat(threshold) * 100))))
+    // إدخال فارغ/غير رقمي كان يُخزَّن حرفياً كـ'NaN' فتتعطّل قراءة العتبة بعدها
+    const n = parseFloat(threshold)
+    if (!Number.isFinite(n) || n < 0) { show('أدخل قيمة رقمية صحيحة للعتبة', 'error'); return }
+    await call(api.settings.set('alert_threshold', String(Math.round(n * 100))))
     show('تم حفظ عتبة التنبيه', 'success')
   }
 

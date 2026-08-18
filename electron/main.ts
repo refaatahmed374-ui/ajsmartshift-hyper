@@ -160,12 +160,6 @@ handle('shifts:updateNote',     (db, id, note)   => ShiftRepo.updateShiftNote(db
 handle('shifts:updateCloseInputs', (db, id, data) => ShiftRepo.updateShiftCloseInputs(db, id as number, data as Parameters<typeof ShiftRepo.updateShiftCloseInputs>[2]))
 handle('shifts:updateMeta',     (db, id, data) => ShiftRepo.updateShiftMeta(db, id as number, data as Parameters<typeof ShiftRepo.updateShiftMeta>[2]))
 handle('shifts:delete',         (db, id)         => ShiftRepo.deleteShift(db, id as number))
-handle('shifts:close',          (db, id, cash, posSales, cashierRemaining) => {
-  // v2.31.3 — إصلاح: تم تمرير `expectedCash` بدلاً من `cashierRemaining` كـ `actualCash`.
-  // الآن `cash` هو `cashierRemaining` الفعلي.
-  // تم حذف منطق التنبيهات القديم من هنا، حيث لا يُستخدم.
-  return ShiftRepo.closeShift(db, id as number, cash as number, (posSales as number) ?? 0, (cashierRemaining as number) ?? 0)
-})
 
 // ===== فوري =====
 handle('fawry:get',             (db, sid)  => ShiftRepo.getFawry(db, sid as number))

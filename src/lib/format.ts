@@ -1,4 +1,5 @@
 // دوال التنسيق المستخدمة في الواجهة
+import { localISO } from '../../core/date'
 
 export function fmt(pias: number): string {
   return (pias / 100).toLocaleString('en-US', {
@@ -19,8 +20,10 @@ export function parsePias(input: string): number {
   return isNaN(n) ? 0 : Math.round(n * 100)
 }
 
+// تاريخ اليوم بالتقويم المحلي — كان `toISOString()` (وهو UTC) فيرجع تاريخ الأمس
+// لأي عملية بين منتصف الليل والفجر بتوقيت مصر (UTC+2/+3).
 export function todayISO(): string {
-  return new Date().toISOString().slice(0, 10)
+  return localISO()
 }
 
 export function nowTime(): string {

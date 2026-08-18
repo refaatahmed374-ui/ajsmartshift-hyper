@@ -23,6 +23,7 @@ export interface LedgerEntry {
   debit: number
   credit: number
   balance?: number     // رصيد متراكم
+  transactionId?: number | null   // البند الذي وَلَّد هذا القيد (null = قيد يدوي)
 }
 
 function table(type: PartyType): string {
@@ -101,19 +102,34 @@ export function getLedger(db: Database.Database, type: PartyType, partyId: numbe
       id: r.id as number, partyType: type, partyId,
       date: r.date as string, description: r.description as string,
       debit, credit, balance: bal,
+      transactionId: (r.transaction_id as number | null) ?? null,
     }
   })
 }
 
 export function addLedgerEntry(
   db: Database.Database,
-  data: { partyType: PartyType; partyId: number; date: string; description: string; debit: number; credit: number }
+  data: { partyType: PartyType; partyId: number; date: string; description: string; debit: number; credit: number
+          transactionId?: number | null },
 ): number {
   const res = db.prepare(`
-    INSERT INTO party_ledger (party_type, party_id, date, description, debit, credit)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(data.partyType, data.partyId, data.date, data.description, data.debit, data.credit)
+    INSERT INTO party_ledger (party_type, party_id, date, description, debit, credit, transaction_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(data.partyType, data.partyId, data.date, data.description, data.debit, data.credit,
+         data.transactionId ?? null)
   return res.lastInsertRowid as number
+}
+
+// حذف كل قيود كشف الحساب المولَّدة من بند يومية معيّن — يُستدعى عند حذف البند أو قبل إعادة توليده
+export function deleteLedgerEntriesByTransaction(db: Database.Database, transactionId: number): void {
+  db.prepare(`DELETE FROM party_ledger WHERE transaction_id = ?`).run(transactionId)
+}
+
+// حذف قيود كشف الحساب المولَّدة من كل بنود شيفت معيّن — يُستدعى عند حذف الشيفت بالكامل
+export function deleteLedgerEntriesByShift(db: Database.Database, shiftId: number): void {
+  db.prepare(`
+    DELETE FROM party_ledger WHERE transaction_id IN (SELECT id FROM transactions WHERE shift_id = ?)
+  `).run(shiftId)
 }
 
 export function deleteLedgerEntry(db: Database.Database, id: number): void {

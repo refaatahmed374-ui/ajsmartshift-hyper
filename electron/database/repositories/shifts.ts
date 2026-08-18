@@ -3,6 +3,15 @@ import type { Shift, ShiftFawry, ShiftCustody, Journal } from '../../../core/typ
 import { detectShiftType, calcMonthlyShiftNum, calcShiftClosing } from '../../../core/engine'
 import { assertMonthUnlocked } from './treasury'
 import { createNotification } from './notifications'
+import { deleteLedgerEntriesByShift } from './parties'
+
+// عتبة تنبيه العجز/الأوفر بالقروش (settings.alert_threshold) — الافتراضي 0 أي "نبّه على أي فرق".
+// تتجاهل أي قيمة مخزَّنة غير صالحة (مثل 'NaN') بدل أن تُعطّل التنبيهات كلياً.
+function getAlertThreshold(db: Database.Database): number {
+  const row = db.prepare(`SELECT value FROM settings WHERE key='alert_threshold'`).get() as { value: string } | undefined
+  const n = Number(row?.value)
+  return Number.isFinite(n) && n >= 0 ? n : 0
+}
 
 // يحسم تاريخ الشيفت لأغراض حارس القفل الشهري، ويتحقق منه فورًا
 function assertShiftMonthUnlocked(db: Database.Database, shiftId: number): void {
@@ -73,30 +82,35 @@ export function createShift(
 ): Shift {
   const shiftType = data.type ?? detectShiftType(data.startTime)
 
-  // رقم الشيفت الشهري
+  // رقم الشيفت الشهري — من أكبر رقم مستخدَم في الشهر لا من عدد الشيفتات (يمنع التكرار بعد الحذف)
   const month = data.date.substring(0, 7)
-  const existing = db
-    .prepare(`SELECT id FROM shifts WHERE date LIKE ?`)
-    .all(`${month}%`) as { id: number }[]
-  const monthlyNum = calcMonthlyShiftNum(existing)
+  const existingNums = (db
+    .prepare(`SELECT monthly_shift_num AS n FROM shifts WHERE date LIKE ?`)
+    .all(`${month}%`) as { n: number }[]).map(r => r.n)
+  const monthlyNum = calcMonthlyShiftNum(existingNums)
 
-  const res = db.prepare(`
-    INSERT INTO shifts
-      (branch_id, monthly_shift_num, date, type, cashier_user_id, cashier_name,
-       start_time, opening_balance, created_by, note)
-    VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(monthlyNum, data.date, shiftType, data.cashierUserId, data.cashierName,
-         data.startTime, data.openingBalance, data.createdBy, data.note ?? '')
+  // الشيفت وتوابعه (يومية + فوري + عهدة) وحدة واحدة — أي فشل جزئي كان يترك شيفتاً بلا يومية
+  // فتفشل عليه كل عمليات إضافة البنود لاحقاً
+  const shiftId = db.transaction(() => {
+    const res = db.prepare(`
+      INSERT INTO shifts
+        (branch_id, monthly_shift_num, date, type, cashier_user_id, cashier_name,
+         start_time, opening_balance, created_by, note)
+      VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(monthlyNum, data.date, shiftType, data.cashierUserId, data.cashierName,
+           data.startTime, data.openingBalance, data.createdBy, data.note ?? '')
 
-  const shiftId = res.lastInsertRowid as number
+    const id = res.lastInsertRowid as number
 
-  // إنشاء يومية تلقائية
-  const journalNum = `J-${data.date.replace(/-/g, '')}-${String(monthlyNum).padStart(2, '0')}`
-  db.prepare(`INSERT INTO journals (shift_id, journal_num) VALUES (?, ?)`).run(shiftId, journalNum)
+    // إنشاء يومية تلقائية
+    const journalNum = `J-${data.date.replace(/-/g, '')}-${String(monthlyNum).padStart(2, '0')}`
+    db.prepare(`INSERT INTO journals (shift_id, journal_num) VALUES (?, ?)`).run(id, journalNum)
 
-  // إنشاء سجل فوري وعهدة فارغ
-  db.prepare(`INSERT INTO shift_fawry (shift_id) VALUES (?)`).run(shiftId)
-  db.prepare(`INSERT INTO shift_custody (shift_id) VALUES (?)`).run(shiftId)
+    // إنشاء سجل فوري وعهدة فارغ
+    db.prepare(`INSERT INTO shift_fawry (shift_id) VALUES (?)`).run(id)
+    db.prepare(`INSERT INTO shift_custody (shift_id) VALUES (?)`).run(id)
+    return id
+  })()
 
   return row2shift(db.prepare(`SELECT * FROM shifts WHERE id = ?`).get(shiftId) as Record<string, unknown>)
 }
@@ -133,71 +147,70 @@ export function updateShiftStatus(
 ): void {
   assertShiftMonthUnlocked(db, shiftId)
   if (status === 'approved') {
+    // إعادة احتساب التحصيل ومصروفات الكاشير من البنود قبل الاعتماد، حتى لا يُعتمد الشيفت
+    // بمشتقّات قديمة إن أُضيف/عُدِّل بند بعد آخر حفظ لمدخلات التقفيل
+    recalcShiftDerived(db, shiftId)
     db.prepare(`UPDATE shifts SET status=?, approved_by=?, approved_at=datetime('now') WHERE id=?`)
       .run(status, userId, shiftId)
     db.prepare(`UPDATE journals SET status='approved', approved_by=?, approved_at=datetime('now') WHERE shift_id=?`)
       .run(userId, shiftId)
+    notifyShiftBalance(db, shiftId)
   } else {
-    db.prepare(`UPDATE shifts SET status=? WHERE id=?`).run(status, shiftId)
-    db.prepare(`UPDATE journals SET status=? WHERE shift_id=?`).run(status, shiftId)
+    // تصفير بيانات الاعتماد عند إعادة الفتح — كانت تبقى كما هي فيظل الشيفت المفتوح
+    // يحمل توقيع من اعتمده وتاريخ اعتماده
+    db.prepare(`UPDATE shifts SET status=?, approved_by=NULL, approved_at=NULL WHERE id=?`).run(status, shiftId)
+    db.prepare(`UPDATE journals SET status=?, approved_by=NULL, approved_at=NULL WHERE shift_id=?`).run(status, shiftId)
   }
 }
 
-export function closeShift(
-  db: Database.Database,
-  shiftId: number,
-  cashierRemaining: number, // v2.31.3 إصلاح: تم تغيير الاسم ليعكس المعنى الصحيح
-  posSales: number,
-  _cashierRemaining_ignored: number // هذا المعامل لم يعد مستخدماً
-): void {
-  assertShiftMonthUnlocked(db, shiftId)
-  // حساب التلقائيات من قاعدة البيانات مباشرة
-  const collectionsRow = db.prepare(`
-    SELECT COALESCE(SUM(amount_in), 0) AS total FROM transactions t JOIN main_categories mc ON t.main_category_id=mc.id WHERE t.shift_id = ? AND mc.name = 'تحصيل'
-  `).get(shiftId) as { total: number }
+/**
+ * تنبيه العجز/الأوفر عند اعتماد الشيفت — بنفس معادلة الإغلاق الرسمية (core/engine).
+ *
+ * كان هذا المنطق داخل `closeShift`، وهي دالة **لم تكن تُستدعى من أي شاشة إطلاقاً** (الإقفال الحي
+ * يمرّ بـ`updateShiftCloseInputs` ثم `updateShiftStatus('approved')`). فكانت النتيجة أن تنبيهات
+ * العجز/الأوفر لا تُنشأ أبداً رغم وجود شاشة تنبيهات تعرضها وإعداد عتبة يضبطها. نُقل هنا إلى
+ * مسار الاعتماد الفعلي، وحُذفت `closeShift` كلياً.
+ *
+ * فوري: يُقرأ `fawry_total_manual` فقط ولا يُسقَط على `program_sales` إطلاقاً — لأن مبيعات
+ * البرنامج للشيفتات المستورَدة داخلة أصلاً في `pos_sales` فتُحتسَب مرتين (راجع CLAUDE.md).
+ */
+function notifyShiftBalance(db: Database.Database, shiftId: number): void {
+  const shift = db.prepare(`
+    SELECT monthly_shift_num AS num, cashier_name AS cashier, pos_sales AS posSales,
+           cashier_remaining AS cashierRemaining, cashier_collections AS collections,
+           shift_expenses AS expenses
+    FROM shifts WHERE id = ?
+  `).get(shiftId) as {
+    num: number; cashier: string; posSales: number
+    cashierRemaining: number; collections: number; expenses: number
+  } | undefined
+  if (!shift) return
 
-  // مصروفات الشيفت = إجمالي المنصرف − مدفوعات الإدارة (الإدارة تذهب للعهدة)
-  const expensesRow = db.prepare(`
-    SELECT COALESCE(SUM(amount_out), 0) AS total
-    FROM transactions WHERE shift_id = ? AND pay_method != 'management'
-  `).get(shiftId) as { total: number }
-
-  const cashierCollections = collectionsRow.total
-  const shiftExpenses      = expensesRow.total
-
-  db.prepare(`
-    UPDATE shifts SET
-      end_time           = time('now'),
-      closing_balance    = ?, -- الرصيد الختامي هو النقدية المتبقية
-      status             = 'review',
-      pos_sales          = ?,
-      cashier_remaining  = ?,
-      cashier_collections = ?,
-      shift_expenses     = ?
-    WHERE id = ?
-  `).run(cashierRemaining, posSales, cashierRemaining, cashierCollections, shiftExpenses, shiftId)
-
-  // تنبيه تلقائي عند عجز/أوفر — المعادلة الرسمية الموحّدة (core/engine)
-  // مبيعات فوري تدخل درج الكاشير فعلياً فلازم تدخل معادلة العجز/الأوفر (نفس معادلة الشاشة الحيّة).
-  // closeShift لا يُستدعى إلا من الإقفال الحي (فوري دايماً 0 هنا للشيفتات المستورَدة، لا حاجة لاستبعاد
-  // برنامج فوري صراحة)، لكن نقرأ fawry_total_manual فقط تحسباً — لا نسقط على program_sales إطلاقاً.
   const fawryRow = db.prepare(`SELECT fawry_total_manual FROM shift_fawry WHERE shift_id = ?`)
     .get(shiftId) as { fawry_total_manual: number } | undefined
-  const fawrySales = fawryRow?.fawry_total_manual ?? 0
+
   const { result, status } = calcShiftClosing({
-    posSales, fawrySales, cashierRemaining, cashierExpenses: shiftExpenses, collections: cashierCollections,
+    posSales:         shift.posSales,
+    fawrySales:       fawryRow?.fawry_total_manual ?? 0,
+    cashierRemaining: shift.cashierRemaining,
+    cashierExpenses:  shift.expenses,
+    collections:      shift.collections,
   })
-  if (status !== 'balanced') {
-    const shiftInfo = db.prepare(`SELECT monthly_shift_num, cashier_name FROM shifts WHERE id = ?`)
-      .get(shiftId) as { monthly_shift_num: number; cashier_name: string }
-    const amountEgp = (Math.abs(result) / 100).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    createNotification(db, {
-      type: status,
-      title: status === 'deficit' ? 'عجز في شيفت' : 'أوفر في شيفت',
-      message: `شيفت #${shiftInfo.monthly_shift_num} (${shiftInfo.cashier_name}) — الفرق: ${amountEgp} ج`,
-      shiftId,
-    })
-  }
+
+  // تنبيه واحد فقط لكل شيفت — إعادة الاعتماد تستبدل التنبيه القديم بدل تكديس نسخ منه
+  db.prepare(`DELETE FROM notifications WHERE shift_id = ? AND type IN ('deficit','surplus')`).run(shiftId)
+
+  // عتبة التنبيه (قروش) من الإعدادات — كانت مبذورة وقابلة للتحرير في شاشة الإعدادات
+  // لكن لا يقرؤها أي كود على الإطلاق
+  if (status === 'balanced' || Math.abs(result) < getAlertThreshold(db)) return
+
+  const amountEgp = (Math.abs(result) / 100).toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+  createNotification(db, {
+    type: status,
+    title: status === 'deficit' ? 'عجز في شيفت' : 'أوفر في شيفت',
+    message: `شيفت #${shift.num} (${shift.cashier}) — الفرق: ${amountEgp} ج`,
+    shiftId,
+  })
 }
 
 // ADR-012 v2 — تحرير بيانات الشيفت (التاريخ/النوع/اسم الكاشير) يدوياً
@@ -217,12 +230,26 @@ export function updateShiftMeta(
 
 // ADR-012 — تحديث مدخلات إغلاق الكاشير (POS + نقدية متبقية) وإعادة حساب المشتقّات
 // بنفس معادلة closeShift تماماً، لكن بلا تغيير الحالة (تحرير مباشر داخل الورقة الموحّدة).
+//
+// `posSales` و`cashierRemaining` اختياريان: الحقل غير المُمرَّر يُترك على قيمته المخزَّنة.
+// (كان النوع يُلزم بتمرير الاثنين، فكان الاستيراد يمرّر `?? 0` للحقل الغائب من الشيت
+//  فيدهس القيمة الصحيحة بصفر — ولو كان الغائب هو مبيعات POS ظهر عجز وهمي بحجم مبيعات الشيفت كله.)
 export function updateShiftCloseInputs(
   db: Database.Database,
   shiftId: number,
-  data: { posSales: number; cashierRemaining: number }
+  data: { posSales?: number; cashierRemaining?: number }
 ): void {
   assertShiftMonthUnlocked(db, shiftId)
+  recalcShiftDerived(db, shiftId, data)
+}
+
+// إعادة احتساب مشتقّات التقفيل (التحصيل + مصروفات الكاشير) من بنود الشيفت،
+// مع تحديث اختياري لمدخلات الكاشير اليدوية.
+function recalcShiftDerived(
+  db: Database.Database,
+  shiftId: number,
+  data: { posSales?: number; cashierRemaining?: number } = {},
+): void {
   const collectionsRow = db.prepare(`
     SELECT COALESCE(SUM(amount_in), 0) AS total
     FROM transactions t JOIN main_categories mc ON t.main_category_id=mc.id WHERE t.shift_id = ? AND mc.name = 'تحصيل'
@@ -231,9 +258,18 @@ export function updateShiftCloseInputs(
     SELECT COALESCE(SUM(amount_out), 0) AS total
     FROM transactions WHERE shift_id = ? AND pay_method != 'management'
   `).get(shiftId) as { total: number }
-  db.prepare(`
-    UPDATE shifts SET pos_sales=?, cashier_remaining=?, cashier_collections=?, shift_expenses=? WHERE id=?
-  `).run(data.posSales, data.cashierRemaining, collectionsRow.total, expensesRow.total, shiftId)
+
+  const sets = ['cashier_collections=?', 'shift_expenses=?']
+  const vals: number[] = [collectionsRow.total, expensesRow.total]
+  if (data.posSales         !== undefined) { sets.push('pos_sales=?');         vals.push(data.posSales) }
+  if (data.cashierRemaining !== undefined) { sets.push('cashier_remaining=?'); vals.push(data.cashierRemaining) }
+  db.prepare(`UPDATE shifts SET ${sets.join(', ')} WHERE id=?`).run(...vals, shiftId)
+}
+
+// الشيفتات المستوردة من Excel لا تمرّ بـ`closeShift`، فلا يُحسب لها التحصيل ولا مصروفات
+// الكاشير إطلاقاً ما لم يحتوِ الشيت على خانتَي التقفيل. تُستدعى بعد إدراج بنود الشيفت.
+export function recalcShiftClosingTotals(db: Database.Database, shiftId: number): void {
+  recalcShiftDerived(db, shiftId)
 }
 
 // استيراد Excel — يثق برقم «مصروفات الكاشير» المُصالَح فعلياً في الشيت المرجعي (قروش)
@@ -325,14 +361,19 @@ export function deleteShift(
   if (!shift) return { ok: false, reason: 'الشيفت غير موجود' }
   assertMonthUnlocked(db, shift.date)
 
-  // حذف البيانات المرتبطة أولاً
-  db.prepare(`DELETE FROM transactions    WHERE shift_id=?`).run(shiftId)
-  db.prepare(`DELETE FROM shift_fawry     WHERE shift_id=?`).run(shiftId)
-  db.prepare(`DELETE FROM shift_custody   WHERE shift_id=?`).run(shiftId)
-  db.prepare(`DELETE FROM employee_attendance WHERE shift_id=?`).run(shiftId)
-  db.prepare(`DELETE FROM journals        WHERE shift_id=?`).run(shiftId)
-  db.prepare(`DELETE FROM notifications   WHERE shift_id=?`).run(shiftId)
-  db.prepare(`DELETE FROM shifts          WHERE id=?`).run(shiftId)
+  // حذف البيانات المرتبطة أولاً — داخل معاملة واحدة حتى لا يترك أي فشل جزئي شيفتاً نصف محذوف
+  db.transaction(() => {
+    // قيود كشف حساب العملاء المولَّدة من بنود هذا الشيفت — قبل حذف البنود نفسها،
+    // وإلا بقيت ديوناً وهمية دائمة على العملاء بلا أي وسيلة لإزالتها
+    deleteLedgerEntriesByShift(db, shiftId)
+    db.prepare(`DELETE FROM transactions    WHERE shift_id=?`).run(shiftId)
+    db.prepare(`DELETE FROM shift_fawry     WHERE shift_id=?`).run(shiftId)
+    db.prepare(`DELETE FROM shift_custody   WHERE shift_id=?`).run(shiftId)
+    db.prepare(`DELETE FROM employee_attendance WHERE shift_id=?`).run(shiftId)
+    db.prepare(`DELETE FROM journals        WHERE shift_id=?`).run(shiftId)
+    db.prepare(`DELETE FROM notifications   WHERE shift_id=?`).run(shiftId)
+    db.prepare(`DELETE FROM shifts          WHERE id=?`).run(shiftId)
+  })()
   return { ok: true }
 }
 

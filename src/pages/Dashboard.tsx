@@ -4,6 +4,7 @@ import Icons from '../components/Icon'
 import { MiniCombo, MiniDonut } from '../components/MiniChart'
 import { fmt, fmtDate, shiftTypeLabel } from '../lib/format'
 import { calcShiftClosing } from '../../core/engine'
+import { localISO, addDaysISO, nextMonthStartISO } from '../../core/date'
 import type { Shift, Transaction, ShiftCustody, Setting } from '../../core/types'
 
 // ═══════════════════════════════════════════════════════════
@@ -39,7 +40,7 @@ export default function Dashboard() {
   const [filterMode, setFilterMode] = useState<FilterMode>('month')
   const [filterYear, setFilterYear] = useState(now.getFullYear())
   const [filterMonth, setFilterMonth] = useState(now.getMonth() + 1)
-  const [filterDay, setFilterDay] = useState(now.toISOString().slice(0, 10))
+  const [filterDay, setFilterDay] = useState(localISO(now))
 
   // v2.33.0 — رصيد الصندوق الحقيقي (نقاط الارتكاز) لمدى الفترة المعروضة — بديل حساب "fund.prev" القديم المعطَّل
   const [treasuryPos, setTreasuryPos] = useState({ opening: 0, incoming: 0, outgoing: 0, closing: 0 })
@@ -56,8 +57,8 @@ export default function Dashboard() {
       }
       let from: string, toExclusive: string
       if (filterMode === 'year') { from = `${filterYear}-01-01`; toExclusive = `${filterYear + 1}-01-01` }
-      else if (filterMode === 'month') { from = `${filterYear}-${String(filterMonth).padStart(2, '0')}-01`; toExclusive = new Date(filterYear, filterMonth, 1).toISOString().slice(0, 10) }
-      else { from = filterDay; const d = new Date(filterDay); d.setDate(d.getDate() + 1); toExclusive = d.toISOString().slice(0, 10) }
+      else if (filterMode === 'month') { const mk = `${filterYear}-${String(filterMonth).padStart(2, '0')}`; from = `${mk}-01`; toExclusive = nextMonthStartISO(mk) }
+      else { from = filterDay; toExclusive = addDaysISO(filterDay, 1) }
       setTreasuryPos(await call(api.treasury.position(from, toExclusive)) as typeof treasuryPos)
     }
     run().catch(() => {})
@@ -97,7 +98,7 @@ export default function Dashboard() {
   // ── تطابق فترة (الحالية والسابقة) ──
   const monthKey = `${filterYear}-${String(filterMonth).padStart(2, '0')}`
   const prevMonthKey = (() => { const d = new Date(filterYear, filterMonth - 2, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}` })()
-  const prevDay = (() => { const d = new Date(filterDay); d.setDate(d.getDate() - 1); return d.toISOString().slice(0, 10) })()
+  const prevDay = addDaysISO(filterDay, -1)
   function inCur(date: string) {
     if (filterMode === 'all') return true
     if (filterMode === 'year') return date.slice(0, 4) === String(filterYear)

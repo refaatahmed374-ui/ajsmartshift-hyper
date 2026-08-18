@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import { createNotification } from './notifications'
+import { localISO } from '../../../core/date'
 
 // صف حركة الخزينة — قد يكون شيفت أو تسوية (راتب/سحب)
 export interface TreasuryRow {
@@ -54,6 +55,7 @@ export function addTreasuryCheckpoint(
   db: Database.Database,
   data: { date: string; amount: number; source?: string; note?: string }
 ): number {
+  assertMonthUnlocked(db, data.date)
   const res = db.prepare(
     `INSERT INTO treasury_checkpoints (date, amount, source, note) VALUES (?, ?, ?, ?)`
   ).run(data.date, data.amount, data.source ?? 'manual', data.note ?? '')
@@ -102,9 +104,11 @@ export function getTreasuryData(db: Database.Database, month: string): TreasuryD
 
   let adjustments: { id: number; date: string; description: string; type: string; amount: number }[] = []
   try {
+    // شرط `date >= monthStart` ضروري لوضع "الكل" تحديداً: dateLike هناك '%' فكان يلتقط أيضاً
+    // التسويات المؤرَّخة قبل أول شيفت، وهي محتسَبة أصلاً داخل prevBalance ⇒ خصم مزدوج.
     adjustments = db.prepare(`
-      SELECT id, date, description, type, amount FROM treasury_adjustments WHERE date LIKE ?
-    `).all(dateLike) as typeof adjustments
+      SELECT id, date, description, type, amount FROM treasury_adjustments WHERE date LIKE ? AND date >= ?
+    `).all(dateLike, monthStart) as typeof adjustments
   } catch { /* */ }
 
   // جلب كل مصروفات الإدارة للفترة مرة واحدة لتجنب N+1
@@ -214,6 +218,7 @@ export function addTreasuryAdjustment(
   db: Database.Database,
   data: { date: string; type: string; description: string; amount: number }
 ): number {
+  assertMonthUnlocked(db, data.date)
   const res = db.prepare(
     `INSERT INTO treasury_adjustments (date, type, description, amount) VALUES (?, ?, ?, ?)`
   ).run(data.date, data.type, data.description, data.amount)
@@ -225,6 +230,7 @@ export function savePayrollReport(
   db: Database.Database,
   data: { month: string; totalAmount: number; paymentMethod: string; employeeCount: number; detailsJson: string }
 ): number {
+  assertMonthUnlocked(db, `${data.month}-01`)
   const res = db.prepare(
     `INSERT INTO payroll_reports (month, total_amount, payment_method, employee_count, details_json)
      VALUES (?, ?, ?, ?, ?)`
@@ -240,11 +246,14 @@ export function listPayrollReports(db: Database.Database): unknown[] {
 export function deletePayrollReport(db: Database.Database, id: number): boolean {
   const rep = db.prepare(`SELECT month, total_amount FROM payroll_reports WHERE id = ?`).get(id) as { month: string; total_amount: number } | undefined
   if (!rep) return false
+  assertMonthUnlocked(db, `${rep.month}-01`)
+  const reversalDate = localISO()   // التقويم المحلي لا UTC
+  assertMonthUnlocked(db, reversalDate)
   const tx = db.transaction(() => {
     db.prepare(`DELETE FROM payroll_reports WHERE id = ?`).run(id)
     // عكس الخصم: تسوية بقيمة سالبة تُعيد المبلغ لخزينة الإدارة
     db.prepare(`INSERT INTO treasury_adjustments (date, type, description, amount) VALUES (?, ?, ?, ?)`)
-      .run(new Date().toISOString().slice(0, 10), 'salary_reversal', `إلغاء رواتب شهر ${rep.month}`, -rep.total_amount)
+      .run(reversalDate, 'salary_reversal', `إلغاء رواتب شهر ${rep.month}`, -rep.total_amount)
   })
   tx()
   return true

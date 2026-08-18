@@ -7,8 +7,9 @@ import KPICard from '../components/KPICard'
 import { MiniCombo } from '../components/MiniChart'
 import ShiftSheet from '../components/ShiftSheet'
 import ConfirmDialog from '../components/ConfirmDialog'
-import { fmt, fmtDate, shiftTypeLabel, parsePias } from '../lib/format'
+import { fmt, fmtDate, shiftTypeLabel, parsePias, todayISO } from '../lib/format'
 import { calcShiftClosing, calcFawry } from '../../core/engine'
+import { monthEndISO } from '../../core/date'
 import { APP_VERSION } from '../version'
 import type { Shift, Transaction, EmployeeFinancials, ShiftFawry, MainCategory, SubCategory } from '../../core/types'
 
@@ -71,7 +72,7 @@ export default function Reports() {
   const [month,  setMonth]  = useState(() => new Date().toISOString().slice(0, 7))
   // v2.33.0 — فلتر فترة إضافي: شهر كامل (افتراضي) أو يوم محدد داخل نفس الشهر
   const [periodMode, setPeriodMode] = useState<'month' | 'day'>('month')
-  const [day, setDay] = useState(() => new Date().toISOString().slice(0, 10))
+  const [day, setDay] = useState(() => todayISO())
   const [shifts, setShifts] = useState<Shift[]>([])
   const [allTxs, setAllTxs] = useState<Transaction[]>([])
   const [fawryMap, setFawryMap] = useState<Record<number, { programSales: number; fawryTotalManual: number }>>({})
@@ -643,6 +644,7 @@ export default function Reports() {
 function JournalReport({ shifts, allTxs, fawryMap, month, bizName: _bizName, onReload }: {
   shifts: Shift[]; allTxs: Transaction[]; fawryMap: Record<number, { programSales: number; fawryTotalManual: number }>; month: string; bizName: string; onReload: () => void;
 }) {
+  const { show } = useToast()
   // ── نتيجة كل شيفت — المعادلة الرسمية الموحّدة (ADR-012 v2) ──
   // الإغلاق = (نقدية الكاشير + مصروفات الكاشير + التحصيل) − (مبيعات POS + مبيعات فوري)
   type Kind = 'surplus' | 'deficit' | 'balanced'
@@ -680,10 +682,16 @@ function JournalReport({ shifts, allTxs, fawryMap, month, bizName: _bizName, onR
     setDeleting(true)
     try {
       const res = await call(api.shifts.delete(deleteShift.id)) as { ok: boolean; reason?: string }
-      if (!res.ok) { alert(res.reason ?? 'تعذّر الحذف'); setDeleteShift(null); return }
+      // بديل alert() الأصلي: حوار النظام الحاجز يعطّل تركيز نافذة Electron فيُجمّد أول
+      // <input type="date"> بعده — وهذه الشاشة مليئة بها (راجع CLAUDE.md)
+      if (!res.ok) { show(res.reason ?? 'تعذّر الحذف', 'error'); setDeleteShift(null); return }
       setDeleteShift(null)
       onReload() // تحديث القائمة من الأب
-    } catch (e) { console.error(e) }
+    } catch (e) {
+      // كان الخطأ يُبتلع في console فقط، فحذف شيفت في شهر مُقفَل يفشل بصمت تام بلا أي
+      // إشارة للمستخدم — ورسالة حارس القفل الشهري هي بالضبط ما يحتاج قراءته
+      show((e as Error).message, 'error')
+    }
     finally { setDeleting(false) }
   }
 
@@ -1333,7 +1341,8 @@ function MonthlyCloseReport({ month, shifts, allTxs, empFin, onReload }: {
 
   // أول/آخر يوم في الشهر — عرض الفترة فقط (المصدر الحقيقي: شهر الشيفتات المعتمدة)
   const periodStart = `${month}-01`
-  const periodEnd = (() => { const d = new Date(`${month}-01T00:00:00`); d.setMonth(d.getMonth() + 1); d.setDate(0); return d.toISOString().slice(0, 10) })()
+  // آخر يوم في الشهر — كان يُحسب بـ Date محلي ثم toISOString (UTC) فينقص يوماً كاملاً بتوقيت مصر
+  const periodEnd = monthEndISO(month)
   const lastApprovedShiftDate = shifts.filter(s => s.status === 'approved').map(s => s.date).sort().slice(-1)[0]
 
   // ═══ الشهر مُقفَل (مُعتمَد)؟ ═══
